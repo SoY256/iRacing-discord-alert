@@ -15,10 +15,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests iracingdataapi pydantic
+      - run: pip install requests
 
       - run: python watcher.py
         env:
-          IRACING_EMAIL: ${{ secrets.IRACING_EMAIL }}
-          IRACING_PASSWORD: ${{ secrets.IRACING_PASSWORD }}
+          # Loginu i hasła już nie potrzebujemy, ale mogą zostać
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          IRACING_COOKIE: ${{ secrets.IRACING_COOKIE }} # <--- TO JEST NOWOŚĆ
