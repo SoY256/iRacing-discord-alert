@@ -5,7 +5,7 @@ import base64
 import json
 import sys
 
-# --- KONFIGURACJA ---
+# --- DANE ---
 IRACING_EMAIL = os.environ.get("IRACING_EMAIL", "")
 IRACING_PASSWORD = os.environ.get("IRACING_PASSWORD", "")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -15,75 +15,85 @@ def send_discord(msg):
         if DISCORD_WEBHOOK:
             requests.post(DISCORD_WEBHOOK, json={"content": msg})
         print(msg)
-    except Exception as e:
-        print(f"❌ Błąd Discord: {e}")
+    except:
+        pass
 
 def encode_password(username, password):
-    # Logika haszowania iRacing
     auth_str = (password + username.lower()).encode('utf-8')
     hashed = hashlib.sha256(auth_str).digest()
     return base64.b64encode(hashed).decode('utf-8')
 
-def debug_check():
-    print("🕵️‍♂️ URUCHAMIAM TRYB DIAGNOSTYCZNY")
-    
-    # 1. Sprawdzenie zmiennych środowiskowych (bez pokazywania hasła!)
-    print(f"📧 Email długość: {len(IRACING_EMAIL)} znaków")
-    print(f"🔑 Hasło długość: {len(IRACING_PASSWORD)} znaków")
-    
-    if len(IRACING_EMAIL) < 5 or len(IRACING_PASSWORD) < 5:
-        print("❌ BŁĄD: Email lub hasło wydają się za krótkie/puste w Secrets!")
-        return
+def check_hosted():
+    print("🤖 START: Próba obejścia zabezpieczeń Cloudflare...")
 
-    # 2. Próba logowania 'na piechotę' z podglądem błędu
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Content-Type": "application/json"
-    })
-
-    login_url = "https://members-ng.iracing.com/auth"
-    payload = {
-        "email": IRACING_EMAIL,
-        "password": encode_password(IRACING_EMAIL, IRACING_PASSWORD)
+    # UDAJEMY PRZEGLĄDARKĘ CHROME NA WINDOWSIE
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://members-ng.iracing.com",
+        "Referer": "https://members-ng.iracing.com/jforum/forums/list.page"
     }
 
-    print(f"🔐 Próba logowania pod adres: {login_url}")
+    session = requests.Session()
+    session.headers.update(headers)
+
+    # Haszowanie hasła
+    try:
+        hashed_pw = encode_password(IRACING_EMAIL, IRACING_PASSWORD)
+    except Exception as e:
+        send_discord(f"❌ Błąd kodowania hasła: {e}")
+        return
+
+    payload = {"email": IRACING_EMAIL, "password": hashed_pw}
+
+    # PRÓBA LOGOWANIA
+    print("🔐 Wysyłam login do iRacing...")
     
     try:
-        r = session.post(login_url, json=payload)
+        # Uwaga: Nie używamy raise_for_status, żeby zobaczyć treść błędu
+        r = session.post("https://members-ng.iracing.com/auth", json=payload)
     except Exception as e:
-        print(f"❌ Błąd połączenia: {e}")
+        send_discord(f"❌ Błąd połączenia sieciowego: {e}")
         return
 
     print(f"📡 Status odpowiedzi: {r.status_code}")
 
+    # ANALIZA WYNIKU
     if r.status_code == 200:
-        print("✅ LOGOWANIE UDANE! (To znaczy, że biblioteka miała problem, a credentials są OK)")
-        # Próba pobrania sesji
-        r_sessions = session.get("https://members-ng.iracing.com/data/hosted/sessions")
-        if r_sessions.status_code == 200:
-            data = r_sessions.json()
-            count = len(data.get('sessions', []))
-            send_discord(f"✅ **DIAGNOSTYKA SUKCES**: Zalogowano poprawnie. Widzę {count} sesji.")
-        else:
-            print(f"❌ Zalogowano, ale błąd pobrania sesji: {r_sessions.status_code}")
-            print(r_sessions.text[:500])
-    else:
-        # Pokaż co dokładnie zwrócił serwer (to klucz do zagadki)
-        print("❌ LOGOWANIE NIEUDANE. Treść odpowiedzi serwera:")
-        print("-" * 20)
-        print(r.text[:1000]) # Pokaż pierwsze 1000 znaków błędu
-        print("-" * 20)
+        print("✅ ZALOGOWANO! Ominięto blokadę.")
         
-        if "The email or password you entered is incorrect" in r.text:
-            send_discord("⚠️ **DIAGNOSTYKA**: iRacing twierdzi, że hasło lub email są błędne.")
-        elif "Capcha" in r.text or "recaptcha" in r.text:
-            send_discord("⚠️ **DIAGNOSTYKA**: iRacing wymaga CAPTCHA (bot został wykryty/zablokowany).")
-        elif "2fa" in r.text.lower() or "verification code" in r.text.lower():
-            send_discord("⚠️ **DIAGNOSTYKA**: Wymagane 2FA (kod SMS/email). Bot tego nie przeskoczy.")
+        # Pobieramy sesje
+        r_sess = session.get("https://members-ng.iracing.com/data/hosted/sessions")
+        if r_sess.status_code == 200:
+            data = r_sess.json()
+            sessions = data.get('sessions', [])
+            send_discord(f"🎉 SUKCES: Widzę {len(sessions)} sesji online. System działa.")
+            
+            # Tu (opcjonalnie) wklej pętlę filtrującą z poprzednich wersji, jeśli to zadziała
         else:
-            send_discord(f"⚠️ **DIAGNOSTYKA**: Błąd logowania {r.status_code}. Sprawdź logi GitHub.")
+            send_discord(f"⚠️ Zalogowano, ale nie można pobrać sesji (Status {r_sess.status_code})")
+            
+    elif r.status_code == 405:
+        print("⛔ BLOKADA 405 (Method Not Allowed).")
+        print("To oznacza, że iRacing/Cloudflare blokuje Twoje IP (GitHub).")
+        send_discord("❌ Błąd 405: iRacing blokuje logowanie z serwerów GitHuba.")
+
+    elif r.status_code == 429:
+        send_discord("⏳ Za dużo zapytań (Rate Limit). Odczekaj chwilę.")
+
+    else:
+        # Sprawdzamy czy to Cloudflare / Captcha
+        content = r.text.lower()
+        if "captcha" in content or "challenge" in content or "cloudflare" in content:
+            print("🛡️ Wykryto CAPTCHA / Cloudflare.")
+            send_discord("❌ Błąd: iRacing wymaga weryfikacji CAPTCHA (blokada anty-bot).")
+        elif "incorrect" in content:
+            send_discord("❌ Błąd: Nieprawidłowe hasło lub email.")
+        else:
+            # Wypisz początek błędu
+            clean_err = r.text[:200].replace("\n", " ")
+            send_discord(f"❌ Nieznany błąd logowania {r.status_code}: {clean_err}")
 
 if __name__ == "__main__":
-    debug_check()
+    check_hosted()
