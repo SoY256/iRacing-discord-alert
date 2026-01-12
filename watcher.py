@@ -1,13 +1,9 @@
 import os
 import requests
-import hashlib
-import base64
-import json
 import sys
 
-# --- DANE ---
-IRACING_EMAIL = os.environ.get("IRACING_EMAIL", "")
-IRACING_PASSWORD = os.environ.get("IRACING_PASSWORD", "")
+# --- KONFIGURACJA ---
+IRACING_COOKIE = os.environ.get("IRACING_COOKIE", "")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 def send_discord(msg):
@@ -15,85 +11,71 @@ def send_discord(msg):
         if DISCORD_WEBHOOK:
             requests.post(DISCORD_WEBHOOK, json={"content": msg})
         print(msg)
-    except:
-        pass
-
-def encode_password(username, password):
-    auth_str = (password + username.lower()).encode('utf-8')
-    hashed = hashlib.sha256(auth_str).digest()
-    return base64.b64encode(hashed).decode('utf-8')
+    except Exception as e:
+        print(f"❌ Błąd Discord: {e}")
 
 def check_hosted():
-    print("🤖 START: Próba obejścia zabezpieczeń Cloudflare...")
+    if not IRACING_COOKIE:
+        print("❌ BŁĄD: Brak zmiennej IRACING_COOKIE w Secrets! Wykonaj KROK 2 instrukcji.")
+        return
 
-    # UDAJEMY PRZEGLĄDARKĘ CHROME NA WINDOWSIE
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "Origin": "https://members-ng.iracing.com",
-        "Referer": "https://members-ng.iracing.com/jforum/forums/list.page"
-    }
+    print("🍪 Używam ciasteczka sesyjnego (pomijam logowanie)...")
 
     session = requests.Session()
-    session.headers.update(headers)
+    # Udajemy przeglądarkę i wklejamy Twoje ciasteczko
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Cookie": IRACING_COOKIE 
+    })
 
-    # Haszowanie hasła
-    try:
-        hashed_pw = encode_password(IRACING_EMAIL, IRACING_PASSWORD)
-    except Exception as e:
-        send_discord(f"❌ Błąd kodowania hasła: {e}")
-        return
-
-    payload = {"email": IRACING_EMAIL, "password": hashed_pw}
-
-    # PRÓBA LOGOWANIA
-    print("🔐 Wysyłam login do iRacing...")
+    print("📡 Pobieranie listy sesji...")
     
     try:
-        # Uwaga: Nie używamy raise_for_status, żeby zobaczyć treść błędu
-        r = session.post("https://members-ng.iracing.com/auth", json=payload)
+        # Od razu strzelamy po dane
+        r = session.get("https://members-ng.iracing.com/data/hosted/sessions")
     except Exception as e:
-        send_discord(f"❌ Błąd połączenia sieciowego: {e}")
+        send_discord(f"❌ Błąd połączenia: {e}")
         return
 
-    print(f"📡 Status odpowiedzi: {r.status_code}")
+    # Obsługa błędów autoryzacji
+    if r.status_code == 401 or r.status_code == 403:
+        send_discord("⛔ Błąd 401/403: Twoje ciasteczko wygasło. Zaloguj się w przeglądarce i skopiuj nowe do GitHub Secrets.")
+        return
+    elif r.status_code != 200:
+        send_discord(f"❌ Inny błąd API: {r.status_code} | {r.text[:200]}")
+        return
 
-    # ANALIZA WYNIKU
-    if r.status_code == 200:
-        print("✅ ZALOGOWANO! Ominięto blokadę.")
+    # Jeśli przeszło, to mamy dane!
+    data = r.json()
+    sessions = data.get("sessions", [])
+    print(f"📊 Pobrana liczba sesji: {len(sessions)}")
+
+    if not sessions:
+        send_discord("ℹ️ Lista sesji jest pusta.")
+        return
+
+    # --- TESTOWE WYSYŁANIE 5 SESJI ---
+    send_discord(f"🍪 **METODA CIASTECZKOWA DZIAŁA!** Widzę {len(sessions)} sesji. Przykłady:")
+
+    for s in sessions[:5]:
+        session_name = s.get('session_name', 'No Name')
+        track = s.get('track', {}).get('track_name', 'Unknown Track')
         
-        # Pobieramy sesje
-        r_sess = session.get("https://members-ng.iracing.com/data/hosted/sessions")
-        if r_sess.status_code == 200:
-            data = r_sess.json()
-            sessions = data.get('sessions', [])
-            send_discord(f"🎉 SUKCES: Widzę {len(sessions)} sesji online. System działa.")
-            
-            # Tu (opcjonalnie) wklej pętlę filtrującą z poprzednich wersji, jeśli to zadziała
-        else:
-            send_discord(f"⚠️ Zalogowano, ale nie można pobrać sesji (Status {r_sess.status_code})")
-            
-    elif r.status_code == 405:
-        print("⛔ BLOKADA 405 (Method Not Allowed).")
-        print("To oznacza, że iRacing/Cloudflare blokuje Twoje IP (GitHub).")
-        send_discord("❌ Błąd 405: iRacing blokuje logowanie z serwerów GitHuba.")
+        # Wyciąganie aut
+        cars = s.get('cars', [])
+        car_names = ", ".join([c.get('car_name', 'Car') for c in cars])
+        if len(car_names) > 50: car_names = car_names[:50] + "..."
 
-    elif r.status_code == 429:
-        send_discord("⏳ Za dużo zapytań (Rate Limit). Odczekaj chwilę.")
+        status = "🔒" if s.get('password_protected') else "🔓"
 
-    else:
-        # Sprawdzamy czy to Cloudflare / Captcha
-        content = r.text.lower()
-        if "captcha" in content or "challenge" in content or "cloudflare" in content:
-            print("🛡️ Wykryto CAPTCHA / Cloudflare.")
-            send_discord("❌ Błąd: iRacing wymaga weryfikacji CAPTCHA (blokada anty-bot).")
-        elif "incorrect" in content:
-            send_discord("❌ Błąd: Nieprawidłowe hasło lub email.")
-        else:
-            # Wypisz początek błędu
-            clean_err = r.text[:200].replace("\n", " ")
-            send_discord(f"❌ Nieznany błąd logowania {r.status_code}: {clean_err}")
+        msg = (
+            f"{status} **{session_name}**\n"
+            f"📍 {track}\n"
+            f"🏎️ {car_names}\n"
+            "-----------------------"
+        )
+        send_discord(msg)
 
 if __name__ == "__main__":
     check_hosted()
