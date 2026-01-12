@@ -5,8 +5,8 @@ IRACING_EMAIL = os.environ["IRACING_EMAIL"]
 IRACING_PASSWORD = os.environ["IRACING_PASSWORD"]
 DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK_URL"]
 
-CAR_NAME = "Dallara iR-01"
-TRACK_NAME = "Spa-Francorchamps"
+CAR_NAME = "Dallara F3"
+TRACK_NAME = "Lime Rock Park"
 
 session = requests.Session()
 
@@ -30,9 +30,9 @@ def check_hosted():
     for s in sessions:
         if s["has_password"]:
             continue
-        if CAR_NAME not in s["Dallara F3"]:
+        if CAR_NAME not in s["car_name"]:
             continue
-        if TRACK_NAME not in s["Lime Rock Park"]:
+        if TRACK_NAME not in s["track_name"]:
             continue
 
         msg = (
