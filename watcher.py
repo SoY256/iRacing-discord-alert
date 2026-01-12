@@ -22,8 +22,10 @@ def check_hosted():
         idc = irDataClient(username=IRACING_EMAIL, password=IRACING_PASSWORD)
         print("✅ Zalogowano pomyślnie!")
         
-        # Pobieramy sesje hosted
-        sessions = idc.hosted_sessions
+        # --- TU BYŁ BŁĄD: dodano nawiasy () ---
+        sessions = idc.hosted_sessions() 
+        # --------------------------------------
+
         print(f"📊 Pobrana liczba sesji: {len(sessions)}")
         
         if not sessions:
@@ -31,18 +33,31 @@ def check_hosted():
             return
 
         # --- TEST: WYŚWIETLAMY 5 PIERWSZYCH SESJI ---
-        send_discord(f"🧪 **TEST DZIAŁANIA (BIBLIOTEKA)** - Znaleziono {len(sessions)} sesji. Oto 5 przykładowych:")
+        send_discord(f"🧪 **TEST DZIAŁANIA** - Znaleziono {len(sessions)} sesji. Oto 5 przykładowych:")
 
         for s in sessions[:5]:
-            # Wyciąganie danych przez bibliotekę jest prostsze (to zwykłe słowniki)
+            # Wyciąganie danych
             session_name = s.get('session_name', 'No Name')
             track = s.get('track', {}).get('track_name', 'Unknown Track')
             host = s.get('host', {}).get('display_name', 'Unknown Host')
-            is_private = s.get('password_protected', False)
+            is_private = s.get('private_session_id') is not None # Biblioteka może zwracać to inaczej, sprawdzamy
             
-            # Auta
-            cars = s.get('cars', [])
-            car_list = [c.get('car_name', 'Car') for c in cars]
+            # W tej bibliotece struktura aut może być nieco inna, więc robimy bezpiecznie:
+            cars = s.get('car_types', []) 
+            # Jeśli to pusta lista, spróbujmy innego pola (zależnie od wersji API)
+            if not cars:
+                 cars = s.get('cars', [])
+
+            car_list = []
+            for c in cars:
+                # Czasem jest to słownik, czasem obiekt
+                if isinstance(c, dict):
+                    car_list.append(c.get('car_name', 'Car'))
+                elif hasattr(c, 'car_name'):
+                    car_list.append(c.car_name)
+                else:
+                    car_list.append("Unknown Car")
+
             car_str = ", ".join(car_list)
             if len(car_str) > 60:
                 car_str = car_str[:60] + "..."
@@ -63,7 +78,7 @@ def check_hosted():
         # Wyłapujemy błędy logowania lub API
         error_msg = f"❌ BŁĄD KRYTYCZNY: {str(e)}"
         print(error_msg)
-        traceback.print_exc() # Zrzut błędu do logów GitHub
+        traceback.print_exc() 
         send_discord(error_msg)
 
 if __name__ == "__main__":
