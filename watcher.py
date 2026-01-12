@@ -3,6 +3,10 @@ import requests
 import sys
 
 # --- KONFIGURACJA ---
+# Tutaj wklej swój User-Agent skopiowany z przeglądarki:
+MY_BROWSER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0" 
+# np.: MY_BROWSER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
 IRACING_COOKIE = os.environ.get("IRACING_COOKIE", "")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
@@ -15,16 +19,31 @@ def send_discord(msg):
         print(f"❌ Błąd Discord: {e}")
 
 def check_hosted():
+    global IRACING_COOKIE
+    
     if not IRACING_COOKIE:
-        print("❌ BŁĄD: Brak zmiennej IRACING_COOKIE w Secrets! Wykonaj KROK 2 instrukcji.")
+        print("❌ BŁĄD: Brak zmiennej IRACING_COOKIE w Secrets!")
         return
 
-    print("🍪 Używam ciasteczka sesyjnego (pomijam logowanie)...")
+    # --- AUTO-NAPRAWA CIASTECZKA ---
+    # Jeśli przez przypadek skopiowałeś "Cookie: " na początku, usuwamy to
+    if IRACING_COOKIE.strip().lower().startswith("cookie:"):
+        print("🔧 Wykryto prefiks 'Cookie:', naprawiam format...")
+        IRACING_COOKIE = IRACING_COOKIE.split(":", 1)[1].strip()
+
+    print(f"🍪 Ciasteczko załadowane (długość: {len(IRACING_COOKIE)} znaków)")
+    
+    # Jeśli użytkownik zapomniał podmienić User-Agent w kodzie, używamy domyślnego
+    if "WKLEJ_TUTAJ" in MY_BROWSER_AGENT:
+        print("⚠️ UWAGA: Nie podmieniłeś MY_BROWSER_AGENT w kodzie! Używam domyślnego (może nie działać).")
+        agent_to_use = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36"
+    else:
+        print("🕵️ Używam Twojego User-Agent z przeglądarki.")
+        agent_to_use = MY_BROWSER_AGENT
 
     session = requests.Session()
-    # Udajemy przeglądarkę i wklejamy Twoje ciasteczko
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0.0.0 Safari/537.36",
+        "User-Agent": agent_to_use,
         "Content-Type": "application/json",
         "Cookie": IRACING_COOKIE 
     })
@@ -32,50 +51,33 @@ def check_hosted():
     print("📡 Pobieranie listy sesji...")
     
     try:
-        # Od razu strzelamy po dane
         r = session.get("https://members-ng.iracing.com/data/hosted/sessions")
     except Exception as e:
         send_discord(f"❌ Błąd połączenia: {e}")
         return
 
-    # Obsługa błędów autoryzacji
-    if r.status_code == 401 or r.status_code == 403:
-        send_discord("⛔ Błąd 401/403: Twoje ciasteczko wygasło. Zaloguj się w przeglądarce i skopiuj nowe do GitHub Secrets.")
-        return
+    # Rozdzielamy błędy dla lepszej diagnozy
+    if r.status_code == 401:
+        send_discord("⛔ Błąd 401 (Unauthorized): Ciasteczko jest nieprawidłowe lub wygasło. Serwer go nie akceptuje.")
+        print(r.text[:500])
+    elif r.status_code == 403:
+        send_discord("⛔ Błąd 403 (Forbidden): Cloudflare blokuje połączenie. Prawdopodobnie IP GitHuba jest na czarnej liście.")
     elif r.status_code != 200:
-        send_discord(f"❌ Inny błąd API: {r.status_code} | {r.text[:200]}")
-        return
-
-    # Jeśli przeszło, to mamy dane!
-    data = r.json()
-    sessions = data.get("sessions", [])
-    print(f"📊 Pobrana liczba sesji: {len(sessions)}")
-
-    if not sessions:
-        send_discord("ℹ️ Lista sesji jest pusta.")
-        return
-
-    # --- TESTOWE WYSYŁANIE 5 SESJI ---
-    send_discord(f"🍪 **METODA CIASTECZKOWA DZIAŁA!** Widzę {len(sessions)} sesji. Przykłady:")
-
-    for s in sessions[:5]:
-        session_name = s.get('session_name', 'No Name')
-        track = s.get('track', {}).get('track_name', 'Unknown Track')
+        send_discord(f"❌ Błąd API: {r.status_code} | {r.text[:200]}")
+    else:
+        # SUKCES!
+        data = r.json()
+        sessions = data.get("sessions", [])
         
-        # Wyciąganie aut
-        cars = s.get('cars', [])
-        car_names = ", ".join([c.get('car_name', 'Car') for c in cars])
-        if len(car_names) > 50: car_names = car_names[:50] + "..."
-
-        status = "🔒" if s.get('password_protected') else "🔓"
-
-        msg = (
-            f"{status} **{session_name}**\n"
-            f"📍 {track}\n"
-            f"🏎️ {car_names}\n"
-            "-----------------------"
-        )
-        send_discord(msg)
+        # Jeśli lista pusta, to też sukces (połączenie działa, tylko brak sesji)
+        info_msg = f"✅ **SUKCES!** Połączono z iRacing. Liczba sesji online: {len(sessions)}"
+        send_discord(info_msg)
+        
+        # Wyświetlamy 3 przykładowe dla pewności
+        for s in sessions[:3]:
+            name = s.get('session_name', 'Sesja')
+            track = s.get('track', {}).get('track_name', 'Tor')
+            print(f"-> {name} @ {track}")
 
 if __name__ == "__main__":
     check_hosted()
