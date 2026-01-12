@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install requests iracingdataapi
+      - run: pip install requests iracingdataapi pydantic
 
       - run: python watcher.py
         env:
