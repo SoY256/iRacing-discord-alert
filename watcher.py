@@ -17,11 +17,19 @@ def send_discord(msg):
 def login():
     r = session.post(
         "https://members-ng.iracing.com/auth",
-        json={
+        data={
             "email": IRACING_EMAIL,
             "password": IRACING_PASSWORD
         },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
     )
+
+    send_discord(f"🔐 Login status: {r.status_code}")
+
+    r.raise_for_status()
+
 
     send_discord(f"🔐 Login status: {r.status_code}")
 
