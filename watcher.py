@@ -28,12 +28,12 @@ def check_hosted():
     sessions = r.json()["sessions"]
 
     for s in sessions:
-        if s["has_password"]:
-            continue
-        if CAR_NAME not in s["car_name"]:
-            continue
-        if TRACK_NAME not in s["track_name"]:
-            continue
+        #if s["has_password"]:
+        #    continue
+        #if CAR_NAME not in s["car_name"]:
+        #    continue
+        #if TRACK_NAME not in s["track_name"]:
+        #    continue
 
         msg = (
             "🏁 **NOWA HOSTED SESSION!**\n\n"
