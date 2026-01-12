@@ -5,41 +5,53 @@ IRACING_EMAIL = os.environ["IRACING_EMAIL"]
 IRACING_PASSWORD = os.environ["IRACING_PASSWORD"]
 DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK_URL"]
 
-CAR_NAME = "Dallara F3"
-TRACK_NAME = "Lime Rock Park"
-
 session = requests.Session()
-
-def login():
-    session.post(
-        "https://members-ng.iracing.com/auth",
-        json={"email": IRACING_EMAIL, "password": IRACING_PASSWORD},
-    )
+session.headers.update({
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+})
 
 def send_discord(msg):
-    requests.post(
-        DISCORD_WEBHOOK,
-        json={"content": msg}
+    requests.post(DISCORD_WEBHOOK, json={"content": msg})
+
+def login():
+    r = session.post(
+        "https://members-ng.iracing.com/auth",
+        json={
+            "email": IRACING_EMAIL,
+            "password": IRACING_PASSWORD
+        },
     )
 
+    send_discord(f"🔐 Login status: {r.status_code}")
+
+    r.raise_for_status()
+
 def check_hosted():
+    send_discord("🚀 Skrypt wystartował")
+
     login()
+
     r = session.get("https://members-ng.iracing.com/data/hosted/sessions")
-    sessions = r.json()["sessions"]
+    send_discord(f"📡 Hosted sessions status: {r.status_code}")
 
-    for s in sessions:
-        #if s["has_password"]:
-        #    continue
-        #if CAR_NAME not in s["car_name"]:
-        #    continue
-        #if TRACK_NAME not in s["track_name"]:
-        #    continue
+    r.raise_for_status()
 
+    data = r.json()
+    sessions = data.get("sessions", [])
+
+    send_discord(f"📊 Liczba sesji: {len(sessions)}")
+
+    if not sessions:
+        send_discord("❌ Brak sesji w odpowiedzi API")
+        return
+
+    for s in sessions[:5]:  # max 5 żeby nie spamować
         msg = (
-            "🏁 **NOWA HOSTED SESSION!**\n\n"
-            f"🚗 **{s['car_name']}**\n"
-            f"📍 **{s['track_name']}**\n"
-            "🔓 Publiczna (bez hasła)"
+            "🏁 **HOSTED SESSION**\n\n"
+            f"🚗 {s.get('car_name')}\n"
+            f"📍 {s.get('track_name')}\n"
+            f"🔒 Hasło: {s.get('has_password')}"
         )
         send_discord(msg)
 
