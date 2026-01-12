@@ -30,9 +30,9 @@ def check_hosted():
     for s in sessions:
         if s["has_password"]:
             continue
-        if CAR_NAME not in s["car_name"]:
+        if CAR_NAME not in s["Dallara F3"]:
             continue
-        if TRACK_NAME not in s["track_name"]:
+        if TRACK_NAME not in s["Lime Rock Park"]:
             continue
 
         msg = (
