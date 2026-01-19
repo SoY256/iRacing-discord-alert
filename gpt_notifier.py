@@ -8,8 +8,8 @@ TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 HOSTED_URL = "https://data.iracing.com/data/hosted/hosted_sessions"
 
 
-def mask(value: str, salt: str) -> str:
-    raw = (value + salt.strip().lower()).encode("utf-8")
+def mask_password(password: str, email: str) -> str:
+    raw = (password + email.strip().lower()).encode("utf-8")
     digest = hashlib.sha256(raw).digest()
     return base64.b64encode(digest).decode("utf-8")
 
@@ -20,11 +20,8 @@ def get_access_token() -> str:
     email = os.environ["IR_EMAIL"]
     password = os.environ["IR_PASSWORD"]
 
-    masked_client_secret = mask(client_secret, client_id)
-    masked_password = mask(password, email)
-
     basic_auth = base64.b64encode(
-        f"{client_id}:{masked_client_secret}".encode("utf-8")
+        f"{client_id}:{client_secret}".encode("utf-8")
     ).decode("utf-8")
 
     headers = {
@@ -34,9 +31,10 @@ def get_access_token() -> str:
 
     payload = {
         "grant_type": "password_limited",
-        "client_id": client_id,          # ⬅️ TO BYŁ BRAKUJĄCY ELEMENT
+        "client_id": client_id,
+        "client_secret": client_secret,
         "username": email,
-        "password": masked_password,
+        "password": mask_password(password, email),
         "audience": "data-server"
     }
 
@@ -71,48 +69,3 @@ def get_hosted_sessions(token: str) -> list:
 
 
 def format_sessions(sessions: list) -> str:
-    lines = []
-
-    for s in sessions[:5]:
-        start = datetime.fromisoformat(s["start_time"].replace("Z", ""))
-        lines.append(
-            f"**{s['session_name']}**\n"
-            f"Track: {s['track']['track_name']}\n"
-            f"Car: {s['car_class']['short_name']}\n"
-            f"Start: {start:%Y-%m-%d %H:%M UTC}\n"
-        )
-
-    return "\n".join(lines)
-
-
-def send_to_discord(message: str):
-    response = requests.post(
-        os.environ["DISCORD_WEBHOOK"],
-        json={"content": f"🏁 **iRacing Hosted Sessions** 🏁\n\n{message}"},
-        timeout=15
-    )
-
-    if response.status_code not in (200, 204):
-        raise RuntimeError(
-            f"Discord webhook error {response.status_code}: {response.text}"
-        )
-
-
-def main():
-    print("🔐 Getting access token...")
-    token = get_access_token()
-
-    print("📡 Fetching hosted sessions...")
-    sessions = get_hosted_sessions(token)
-
-    if not sessions:
-        send_to_discord("No hosted sessions available right now.")
-        print("ℹ️ No sessions found")
-        return
-
-    send_to_discord(format_sessions(sessions))
-    print("✅ Notification sent")
-
-
-if __name__ == "__main__":
-    main()
