@@ -10,7 +10,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Pobieranie zmiennych z GitHub Secrets
-# Dodajemy .strip(), żeby usunąć ewentualne spacje przy kopiowaniu
 CLIENT_ID = os.environ.get("IR_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.environ.get("IR_CLIENT_SECRET", "").strip()
 EMAIL = os.environ.get("IR_EMAIL", "").strip()
@@ -23,15 +22,22 @@ SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/sessions"
 
 def encode_password(secret, modifier):
     """
-    Realizuje specyficzne haszowanie TYLKO dla hasła użytkownika:
-    Base64( SHA256( password + email.lower() ) )
+    Realizuje haszowanie zgodne z wymogiem 'URL-safe Base64':
+    1. SHA256( password + email.lower() )
+    2. URL-safe Base64 (zamienia + na - oraz / na _)
+    3. Usunięcie paddingu (=) na końcu
     """
     if not secret or not modifier:
         return ""
     
     initial_text = secret + modifier.lower()
     hash_digest = hashlib.sha256(initial_text.encode('utf-8')).digest()
-    return base64.b64encode(hash_digest).decode('utf-8')
+    
+    # ZMIANA KLUCZOWA: Używamy urlsafe_b64encode zamiast standardowego b64encode
+    encoded = base64.urlsafe_b64encode(hash_digest).decode('utf-8')
+    
+    # Wiele implementacji OAuth (w tym ta) nie lubi znaków '=' na końcu
+    return encoded.rstrip('=')
 
 def get_oauth_token():
     """Loguje się do iRacing używając Password Limited Grant."""
@@ -39,19 +45,18 @@ def get_oauth_token():
         logger.error("❌ Brak zmiennych środowiskowych! Sprawdź GitHub Secrets.")
         sys.exit(1)
 
-    # 1. Kodowanie hasła użytkownika (WYMAGANE)
+    # 1. Kodowanie hasła użytkownika (URL-Safe Base64)
     hashed_password = encode_password(PASSWORD, EMAIL)
     
-    # 2. Client Secret wysyłamy "SUROWY" (NIE HASZUJEMY GO!)
-    # To była przyczyna błędu invalid_client
+    # 2. Client Secret wysyłamy SUROWY (zgodnie z poprzednim testem)
     
     # 3. Payload
     payload = {
         "grant_type": "password_limited",
         "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET, # <--- ZMIANA: Wysyłamy oryginał
+        "client_secret": CLIENT_SECRET, 
         "username": EMAIL,
-        "password": hashed_password     # <--- To nadal musi być zakodowane
+        "password": hashed_password     
     }
 
     try:
@@ -108,7 +113,7 @@ def send_to_discord(session, index):
             {"name": "Host", "value": host, "inline": True},
             {"name": "Auta", "value": cars_str, "inline": False}
         ],
-        "footer": {"text": "iRacing Bot • Fix Client Secret"}
+        "footer": {"text": "iRacing Bot • URL Safe Fix"}
     }
 
     try:
@@ -118,7 +123,7 @@ def send_to_discord(session, index):
         logger.error(f"Błąd Discorda: {e}")
 
 def main():
-    logger.info("🚀 Start skryptu (Tryb: Raw Secret + Hashed Password)...")
+    logger.info("🚀 Start skryptu (Tryb: URL-Safe Base64)...")
     
     # 1. Pobierz token
     token = get_oauth_token()
