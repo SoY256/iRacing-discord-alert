@@ -9,11 +9,8 @@ HOSTED_URL = "https://data.iracing.com/data/hosted/hosted_sessions"
 
 
 def mask(value: str, salt: str) -> str:
-    """
-    mask = base64( sha256( value + lowercase(trim(salt)) ) )
-    """
-    salted = (value + salt.strip().lower()).encode("utf-8")
-    digest = hashlib.sha256(salted).digest()
+    raw = (value + salt.strip().lower()).encode("utf-8")
+    digest = hashlib.sha256(raw).digest()
     return base64.b64encode(digest).decode("utf-8")
 
 
@@ -23,19 +20,29 @@ def get_access_token() -> str:
     email = os.environ["IR_EMAIL"]
     password = os.environ["IR_PASSWORD"]
 
+    masked_client_secret = mask(client_secret, client_id)
+    masked_password = mask(password, email)
+
+    basic_auth = base64.b64encode(
+        f"{client_id}:{masked_client_secret}".encode("utf-8")
+    ).decode("utf-8")
+
+    headers = {
+        "Authorization": f"Basic {basic_auth}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
     payload = {
         "grant_type": "password_limited",
-        "client_id": client_id,
-        "client_secret": mask(client_secret, client_id),
         "username": email,
-        "password": mask(password, email),
+        "password": masked_password,
         "audience": "data-server"
     }
 
     response = requests.post(
         TOKEN_URL,
+        headers=headers,
         data=payload,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=15
     )
 
@@ -48,19 +55,15 @@ def get_access_token() -> str:
 
 
 def get_hosted_sessions(token: str) -> list:
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-
     response = requests.get(
         HOSTED_URL,
-        headers=headers,
+        headers={"Authorization": f"Bearer {token}"},
         timeout=15
     )
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"Hosted sessions error {response.status_code}: {response.text}"
+            f"Hosted error {response.status_code}: {response.text}"
         )
 
     return response.json().get("sessions", [])
@@ -70,33 +73,27 @@ def format_sessions(sessions: list) -> str:
     lines = []
 
     for s in sessions[:5]:
-        start = datetime.fromisoformat(
-            s["start_time"].replace("Z", "")
-        )
-
-        line = (
+        start = datetime.fromisoformat(s["start_time"].replace("Z", ""))
+        lines.append(
             f"**{s['session_name']}**\n"
             f"Track: {s['track']['track_name']}\n"
             f"Car: {s['car_class']['short_name']}\n"
             f"Start: {start:%Y-%m-%d %H:%M UTC}\n"
         )
-        lines.append(line)
 
     return "\n".join(lines)
 
 
 def send_to_discord(message: str):
-    webhook = os.environ["DISCORD_WEBHOOK"]
-
-    payload = {
-        "content": f"🏁 **iRacing Hosted Sessions** 🏁\n\n{message}"
-    }
-
-    response = requests.post(webhook, json=payload, timeout=15)
+    response = requests.post(
+        os.environ["DISCORD_WEBHOOK"],
+        json={"content": f"🏁 **iRacing Hosted Sessions** 🏁\n\n{message}"},
+        timeout=15
+    )
 
     if response.status_code not in (200, 204):
         raise RuntimeError(
-            f"Discord webhook error {response.status_code}: {response.text}"
+            f"Discord error {response.status_code}: {response.text}"
         )
 
 
@@ -108,13 +105,10 @@ def main():
     sessions = get_hosted_sessions(token)
 
     if not sessions:
-        send_to_discord("No hosted sessions available right now.")
-        print("ℹ️ No sessions found")
+        send_to_discord("No hosted sessions available.")
         return
 
-    message = format_sessions(sessions)
-    send_to_discord(message)
-
+    send_to_discord(format_sessions(sessions))
     print("✅ Notification sent")
 
 
