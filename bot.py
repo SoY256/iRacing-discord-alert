@@ -9,7 +9,7 @@ import base64
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Pobieranie zmiennych z GitHub Secrets
+# Pobieranie zmiennych z GitHub Secrets i AGRESYWNE CZYSZCZENIE SPACJI
 CLIENT_ID = os.environ.get("IR_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.environ.get("IR_CLIENT_SECRET", "").strip()
 EMAIL = os.environ.get("IR_EMAIL", "").strip()
@@ -20,24 +20,23 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/sessions"
 
-def encode_password(secret, modifier):
+def encode_credential(secret, modifier):
     """
-    Realizuje haszowanie zgodne z wymogiem 'URL-safe Base64':
-    1. SHA256( password + email.lower() )
-    2. URL-safe Base64 (zamienia + na - oraz / na _)
-    3. Usunięcie paddingu (=) na końcu
+    Realizuje haszowanie: Standard Base64( SHA256( secret + modifier.lower() ) )
     """
     if not secret or not modifier:
         return ""
     
+    # 1. Łączenie: sekret + modyfikator (małymi literami)
     initial_text = secret + modifier.lower()
+    
+    # 2. SHA256
     hash_digest = hashlib.sha256(initial_text.encode('utf-8')).digest()
     
-    # ZMIANA KLUCZOWA: Używamy urlsafe_b64encode zamiast standardowego b64encode
-    encoded = base64.urlsafe_b64encode(hash_digest).decode('utf-8')
+    # 3. STANDARD Base64 (z + i /) - bo serwer odrzucał URL-safe
+    encoded = base64.b64encode(hash_digest).decode('utf-8')
     
-    # Wiele implementacji OAuth (w tym ta) nie lubi znaków '=' na końcu
-    return encoded.rstrip('=')
+    return encoded
 
 def get_oauth_token():
     """Loguje się do iRacing używając Password Limited Grant."""
@@ -45,23 +44,25 @@ def get_oauth_token():
         logger.error("❌ Brak zmiennych środowiskowych! Sprawdź GitHub Secrets.")
         sys.exit(1)
 
-    # 1. Kodowanie hasła użytkownika (URL-Safe Base64)
-    hashed_password = encode_password(PASSWORD, EMAIL)
+    logger.info(f"🔑 Przetwarzanie danych dla Client ID: {CLIENT_ID}")
+
+    # 1. Kodowanie Hasła (Password + Email)
+    hashed_password = encode_credential(PASSWORD, EMAIL)
     
-    # 2. Client Secret wysyłamy SUROWY (zgodnie z poprzednim testem)
+    # 2. Kodowanie Client Secret (Secret + Client ID)
+    # Wracamy do haszowania, bo raw secret powodował błąd formatu Base64
+    hashed_client_secret = encode_credential(CLIENT_SECRET, CLIENT_ID)
     
     # 3. Payload
     payload = {
         "grant_type": "password_limited",
         "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET, 
+        "client_secret": hashed_client_secret, 
         "username": EMAIL,
         "password": hashed_password     
     }
 
     try:
-        logger.info(f"Wysyłam żądanie logowania dla Client ID: {CLIENT_ID}")
-        
         response = requests.post(TOKEN_URL, data=payload)
         response.raise_for_status()
         
@@ -113,7 +114,7 @@ def send_to_discord(session, index):
             {"name": "Host", "value": host, "inline": True},
             {"name": "Auta", "value": cars_str, "inline": False}
         ],
-        "footer": {"text": "iRacing Bot • URL Safe Fix"}
+        "footer": {"text": "iRacing Bot • Strip & Hash Fix"}
     }
 
     try:
@@ -123,7 +124,7 @@ def send_to_discord(session, index):
         logger.error(f"Błąd Discorda: {e}")
 
 def main():
-    logger.info("🚀 Start skryptu (Tryb: URL-Safe Base64)...")
+    logger.info("🚀 Start skryptu (Tryb: Standard Hash + Strip)...")
     
     # 1. Pobierz token
     token = get_oauth_token()
