@@ -34,6 +34,7 @@ def get_access_token() -> str:
 
     payload = {
         "grant_type": "password_limited",
+        "client_id": client_id,          # ⬅️ TO BYŁ BRAKUJĄCY ELEMENT
         "username": email,
         "password": masked_password,
         "audience": "data-server"
@@ -63,7 +64,7 @@ def get_hosted_sessions(token: str) -> list:
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"Hosted error {response.status_code}: {response.text}"
+            f"Hosted sessions error {response.status_code}: {response.text}"
         )
 
     return response.json().get("sessions", [])
@@ -93,7 +94,7 @@ def send_to_discord(message: str):
 
     if response.status_code not in (200, 204):
         raise RuntimeError(
-            f"Discord error {response.status_code}: {response.text}"
+            f"Discord webhook error {response.status_code}: {response.text}"
         )
 
 
@@ -105,7 +106,8 @@ def main():
     sessions = get_hosted_sessions(token)
 
     if not sessions:
-        send_to_discord("No hosted sessions available.")
+        send_to_discord("No hosted sessions available right now.")
+        print("ℹ️ No sessions found")
         return
 
     send_to_discord(format_sessions(sessions))
