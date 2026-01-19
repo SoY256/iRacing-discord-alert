@@ -1,31 +1,33 @@
 name: Copilot Iracing Sessions
 
 on:
-  workflow_dispatch:  # ręczne uruchamianie
-  schedule:
-    - cron: '*/5 * * * *'  # co 5 minut
+  workflow_dispatch: {}
 
 jobs:
-  notify:
+  notify-hosted-sessions:
     runs-on: ubuntu-latest
+
     env:
-      IR_EMAIL: ${{ secrets.IR_EMAIL }}
-      IR_PASSWORD: ${{ secrets.IR_PASSWORD }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
       IR_CLIENT_ID: ${{ secrets.IR_CLIENT_ID }}
       IR_CLIENT_SECRET: ${{ secrets.IR_CLIENT_SECRET }}
-      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      IR_EMAIL: ${{ secrets.IR_EMAIL }}
+      IR_PASSWORD: ${{ secrets.IR_PASSWORD }}
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
-      - name: Run notifier
-        run: python copilot_notifier.py
+      - name: Run copilot_notifier
+        run: |
+          python copilot_notifier.py
