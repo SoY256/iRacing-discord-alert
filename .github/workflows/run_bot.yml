@@ -1,0 +1,31 @@
+name: Manual Test - iRacing Bot
+
+# Tylko ręczne uruchamianie przyciskiem
+on:
+  workflow_dispatch:
+
+jobs:
+  test-run:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Pobierz repozytorium
+      uses: actions/checkout@v3
+
+    - name: Zainstaluj Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Zainstaluj biblioteki
+      run: pip install requests
+
+    - name: Uruchom skrypt testowy
+      env:
+        # Przekazujemy sekrety do skryptu
+        IR_CLIENT_ID: ${{ secrets.IR_CLIENT_ID }}
+        IR_CLIENT_SECRET: ${{ secrets.IR_CLIENT_SECRET }}
+        IR_EMAIL: ${{ secrets.IR_EMAIL }}
+        IR_PASSWORD: ${{ secrets.IR_PASSWORD }}
+        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      run: python bot.py
