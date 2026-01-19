@@ -10,20 +10,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Pobieranie zmiennych z GitHub Secrets
-CLIENT_ID = os.environ.get("IR_CLIENT_ID")
-CLIENT_SECRET = os.environ.get("IR_CLIENT_SECRET")
-EMAIL = os.environ.get("IR_EMAIL")
-PASSWORD = os.environ.get("IR_PASSWORD")
-WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK")
+# Dodajemy .strip(), żeby usunąć ewentualne spacje przy kopiowaniu
+CLIENT_ID = os.environ.get("IR_CLIENT_ID", "").strip()
+CLIENT_SECRET = os.environ.get("IR_CLIENT_SECRET", "").strip()
+EMAIL = os.environ.get("IR_EMAIL", "").strip()
+PASSWORD = os.environ.get("IR_PASSWORD", "").strip()
+WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
 # Endpointy iRacing
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/sessions"
 
-def encode_credential(secret, modifier):
+def encode_password(secret, modifier):
     """
-    Realizuje specyficzne haszowanie dla Password Limited Flow:
-    Base64( SHA256( secret + modifier.lower() ) )
+    Realizuje specyficzne haszowanie TYLKO dla hasła użytkownika:
+    Base64( SHA256( password + email.lower() ) )
     """
     if not secret or not modifier:
         return ""
@@ -38,22 +39,24 @@ def get_oauth_token():
         logger.error("❌ Brak zmiennych środowiskowych! Sprawdź GitHub Secrets.")
         sys.exit(1)
 
-    # 1. Kodowanie poświadczeń
-    hashed_password = encode_credential(PASSWORD, EMAIL)
-    hashed_client_secret = encode_credential(CLIENT_SECRET, CLIENT_ID)
-
-    # 2. Payload specyficzny dla Password Limited Flow
-    # POPRAWKA: Usunięto linię "scope": "data_server", która powodowała błąd 400.
+    # 1. Kodowanie hasła użytkownika (WYMAGANE)
+    hashed_password = encode_password(PASSWORD, EMAIL)
+    
+    # 2. Client Secret wysyłamy "SUROWY" (NIE HASZUJEMY GO!)
+    # To była przyczyna błędu invalid_client
+    
+    # 3. Payload
     payload = {
         "grant_type": "password_limited",
         "client_id": CLIENT_ID,
-        "client_secret": hashed_client_secret,
+        "client_secret": CLIENT_SECRET, # <--- ZMIANA: Wysyłamy oryginał
         "username": EMAIL,
-        "password": hashed_password
+        "password": hashed_password     # <--- To nadal musi być zakodowane
     }
 
     try:
-        # iRacing OAuth2 wymaga Form Data
+        logger.info(f"Wysyłam żądanie logowania dla Client ID: {CLIENT_ID}")
+        
         response = requests.post(TOKEN_URL, data=payload)
         response.raise_for_status()
         
@@ -69,7 +72,6 @@ def get_oauth_token():
 
     except requests.exceptions.HTTPError as e:
         logger.error(f"❌ Błąd autoryzacji (HTTP {response.status_code}): {e}")
-        # Logujemy pełną treść błędu, żeby widzieć co poszło nie tak
         logger.error(f"Treść błędu serwera: {response.text}")
         sys.exit(1)
     except Exception as e:
@@ -106,7 +108,7 @@ def send_to_discord(session, index):
             {"name": "Host", "value": host, "inline": True},
             {"name": "Auta", "value": cars_str, "inline": False}
         ],
-        "footer": {"text": "iRacing Bot • Password Limited Flow"}
+        "footer": {"text": "iRacing Bot • Fix Client Secret"}
     }
 
     try:
@@ -116,7 +118,7 @@ def send_to_discord(session, index):
         logger.error(f"Błąd Discorda: {e}")
 
 def main():
-    logger.info("🚀 Start skryptu (Tryb: Password Limited - No Scope)...")
+    logger.info("🚀 Start skryptu (Tryb: Raw Secret + Hashed Password)...")
     
     # 1. Pobierz token
     token = get_oauth_token()
@@ -137,7 +139,6 @@ def main():
         all_sessions = data.get('sessions', [])
         logger.info(f"Pobrano łącznie {len(all_sessions)} sesji.")
 
-        # Pobierz pierwsze 5 dla testu
         top_5 = all_sessions[:5]
 
         if not top_5:
@@ -149,7 +150,6 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Błąd API Danych: {e}")
-        # Jeśli błąd to 401/403 przy pobieraniu sesji, wypiszemy szczegóły
         if 'resp' in locals():
             logger.error(f"Treść błędu API: {resp.text}")
         sys.exit(1)
