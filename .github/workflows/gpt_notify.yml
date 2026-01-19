@@ -1,0 +1,31 @@
+name: gpt_notify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run iRacing notifier
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          IR_CLIENT_ID: ${{ secrets.IR_CLIENT_ID }}
+          IR_CLIENT_SECRET: ${{ secrets.IR_CLIENT_SECRET }}
+          IR_EMAIL: ${{ secrets.IR_EMAIL }}
+          IR_PASSWORD: ${{ secrets.IR_PASSWORD }}
+        run: |
+          python gpt_notifier.py
