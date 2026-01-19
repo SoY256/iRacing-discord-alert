@@ -22,7 +22,7 @@ SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/sessions"
 
 def encode_credential(secret, modifier):
     """
-    Realizuje specyficzne haszowanie wymagane przez iRacing Password Limited Flow:
+    Realizuje specyficzne haszowanie dla Password Limited Flow:
     Base64( SHA256( secret + modifier.lower() ) )
     """
     if not secret or not modifier:
@@ -38,23 +38,22 @@ def get_oauth_token():
         logger.error("❌ Brak zmiennych środowiskowych! Sprawdź GitHub Secrets.")
         sys.exit(1)
 
-    # 1. Kodowanie poświadczeń (wymagane dla tego typu klienta!)
-    # Hasło kodujemy z maile, a Client Secret z Client ID.
+    # 1. Kodowanie poświadczeń
     hashed_password = encode_credential(PASSWORD, EMAIL)
     hashed_client_secret = encode_credential(CLIENT_SECRET, CLIENT_ID)
 
     # 2. Payload specyficzny dla Password Limited Flow
+    # POPRAWKA: Usunięto linię "scope": "data_server", która powodowała błąd 400.
     payload = {
-        "grant_type": "password_limited",  # <--- TU BYŁ BŁĄD (musi być password_limited)
+        "grant_type": "password_limited",
         "client_id": CLIENT_ID,
-        "client_secret": hashed_client_secret, # <--- Musi być zahaszowane
+        "client_secret": hashed_client_secret,
         "username": EMAIL,
-        "password": hashed_password,           # <--- Musi być zahaszowane
-        "scope": "data_server"
+        "password": hashed_password
     }
 
     try:
-        # iRacing OAuth2 wymaga wysłania danych jako Form Data (domyślne w requests.post)
+        # iRacing OAuth2 wymaga Form Data
         response = requests.post(TOKEN_URL, data=payload)
         response.raise_for_status()
         
@@ -70,6 +69,7 @@ def get_oauth_token():
 
     except requests.exceptions.HTTPError as e:
         logger.error(f"❌ Błąd autoryzacji (HTTP {response.status_code}): {e}")
+        # Logujemy pełną treść błędu, żeby widzieć co poszło nie tak
         logger.error(f"Treść błędu serwera: {response.text}")
         sys.exit(1)
     except Exception as e:
@@ -85,7 +85,6 @@ def send_to_discord(session, index):
     host = session.get('host', {}).get('display_name', 'Nieznany')
     track = session.get('track', {}).get('track_name', 'Nieznany tor')
     
-    # Obsługa różnych formatów aut w API
     cars_list = session.get('car_types', [])
     if not cars_list:
         cars_list = session.get('cars', [])
@@ -117,7 +116,7 @@ def send_to_discord(session, index):
         logger.error(f"Błąd Discorda: {e}")
 
 def main():
-    logger.info("🚀 Start skryptu (Tryb: Password Limited)...")
+    logger.info("🚀 Start skryptu (Tryb: Password Limited - No Scope)...")
     
     # 1. Pobierz token
     token = get_oauth_token()
@@ -150,6 +149,9 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Błąd API Danych: {e}")
+        # Jeśli błąd to 401/403 przy pobieraniu sesji, wypiszemy szczegóły
+        if 'resp' in locals():
+            logger.error(f"Treść błędu API: {resp.text}")
         sys.exit(1)
 
 if __name__ == "__main__":
