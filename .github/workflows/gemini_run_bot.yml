@@ -28,4 +28,4 @@ jobs:
         IR_EMAIL: ${{ secrets.IR_EMAIL }}
         IR_PASSWORD: ${{ secrets.IR_PASSWORD }}
         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      run: python bot.py
+      run: python gemini_bot.py
