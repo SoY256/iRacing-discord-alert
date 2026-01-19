@@ -1,21 +1,21 @@
 import os
+import base64
 import hashlib
 import requests
 from datetime import datetime
-import base64
 
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 HOSTED_URL = "https://data.iracing.com/data/hosted/hosted_sessions"
 
-def mask_password(password: str, email: str) -> str:
+def mask_value(secret: str, identifier: str) -> str:
     """
-    iRacing Password Limited Flow password mask:
-    SHA256(password + lowercase(trim(email))) -> base64 without URL-safe issues
+    Masking algorithm exactly as specified in iRacing OAuth docs:
+    SHA256(secret + lowercase(trim(identifier))) -> standard Base64
     """
-    concat = (password + email.strip().lower()).encode("utf-8")
-    digest = hashlib.sha256(concat).digest()
-    # standard Base64, remove padding
-    return base64.b64encode(digest).decode("utf-8").rstrip("=")
+    normal_id = identifier.strip().lower()
+    combined = (secret + normal_id).encode("utf-8")
+    digest = hashlib.sha256(combined).digest()
+    return base64.b64encode(digest).decode("utf-8")
 
 def get_access_token() -> str:
     client_id = os.environ["IR_CLIENT_ID"]
@@ -23,24 +23,23 @@ def get_access_token() -> str:
     email = os.environ["IR_EMAIL"]
     password = os.environ["IR_PASSWORD"]
 
-    # Basic Auth: standard Base64 client_id:client_secret
-    basic_auth = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("utf-8")
+    # Mask client_secret and password
+    masked_client_secret = mask_value(client_secret, client_id)
+    masked_password = mask_value(password, email)
 
-    headers = {
-        "Authorization": f"Basic {basic_auth}",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
+    # Prepare body
     payload = {
         "grant_type": "password_limited",
         "client_id": client_id,
-        "client_secret": client_secret,
+        "client_secret": masked_client_secret,
         "username": email,
-        "password": mask_password(password, email),
-        "audience": "data-server",
+        "password": masked_password,
+        "scope": "iracing.auth"
     }
 
-    response = requests.post(TOKEN_URL, headers=headers, data=payload, timeout=15)
+    response = requests.post(TOKEN_URL, data=payload, headers={
+        "Content-Type": "application/x-www-form-urlencoded"
+    }, timeout=15)
 
     if response.status_code != 200:
         raise RuntimeError(f"Token error {response.status_code}: {response.text}")
@@ -51,7 +50,7 @@ def get_hosted_sessions(token: str) -> list:
     response = requests.get(
         HOSTED_URL,
         headers={"Authorization": f"Bearer {token}"},
-        timeout=15,
+        timeout=15
     )
 
     if response.status_code != 200:
