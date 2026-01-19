@@ -4,6 +4,7 @@ import hashlib
 import requests
 from datetime import datetime
 
+
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 HOSTED_URL = "https://data.iracing.com/data/hosted/hosted_sessions"
 
@@ -26,7 +27,7 @@ def get_access_token() -> str:
 
     headers = {
         "Authorization": f"Basic {basic_auth}",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
     }
 
     payload = {
@@ -35,14 +36,14 @@ def get_access_token() -> str:
         "client_secret": client_secret,
         "username": email,
         "password": mask_password(password, email),
-        "audience": "data-server"
+        "audience": "data-server",
     }
 
     response = requests.post(
         TOKEN_URL,
         headers=headers,
         data=payload,
-        timeout=15
+        timeout=15,
     )
 
     if response.status_code != 200:
@@ -57,7 +58,7 @@ def get_hosted_sessions(token: str) -> list:
     response = requests.get(
         HOSTED_URL,
         headers={"Authorization": f"Bearer {token}"},
-        timeout=15
+        timeout=15,
     )
 
     if response.status_code != 200:
@@ -69,3 +70,53 @@ def get_hosted_sessions(token: str) -> list:
 
 
 def format_sessions(sessions: list) -> str:
+    lines = []
+
+    for session in sessions[:5]:
+        start = datetime.fromisoformat(
+            session["start_time"].replace("Z", "")
+        )
+
+        lines.append(
+            f"**{session['session_name']}**\n"
+            f"Track: {session['track']['track_name']}\n"
+            f"Car: {session['car_class']['short_name']}\n"
+            f"Start: {start:%Y-%m-%d %H:%M UTC}\n"
+        )
+
+    return "\n".join(lines)
+
+
+def send_to_discord(message: str) -> None:
+    response = requests.post(
+        os.environ["DISCORD_WEBHOOK"],
+        json={"content": message},
+        timeout=15,
+    )
+
+    if response.status_code not in (200, 204):
+        raise RuntimeError(
+            f"Discord error {response.status_code}: {response.text}"
+        )
+
+
+def main() -> None:
+    print("🔐 Getting access token...")
+    token = get_access_token()
+
+    print("📡 Fetching hosted sessions...")
+    sessions = get_hosted_sessions(token)
+
+    if not sessions:
+        send_to_discord("No hosted sessions available.")
+        print("ℹ️ No sessions found")
+        return
+
+    message = "🏁 **iRacing Hosted Sessions** 🏁\n\n" + format_sessions(sessions)
+    send_to_discord(message)
+
+    print("✅ Notification sent")
+
+
+if __name__ == "__main__":
+    main()
