@@ -5,6 +5,7 @@ import hashlib
 import base64
 import logging
 import json
+import time
 from datetime import datetime, timezone
 
 # Konfiguracja logowania
@@ -25,30 +26,41 @@ FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee")
 FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
 FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
 
-# Stałe URL
+# Stałe
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
 HISTORY_FILE = "seen_sessions.json"
 
+def ensure_history_file_exists():
+    """Upewnia się, że plik historii istnieje. Jeśli nie - tworzy pusty."""
+    if not os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'w') as f:
+                json.dump([], f)
+            logger.info(f"🆕 Utworzono nowy, pusty plik historii: {HISTORY_FILE}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Nie udało się utworzyć pliku historii: {e}")
+    return False
+
 def load_seen_sessions():
-    """Wczytuje listę ID sesji, które już zostały wysłane."""
+    """Wczytuje listę ID sesji."""
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r') as f:
                 return set(json.load(f))
         except Exception as e:
-            logger.warning(f"⚠️ Nie udało się wczytać historii: {e}. Tworzę nową.")
+            logger.warning(f"⚠️ Błąd odczytu historii: {e}")
     return set()
 
 def save_seen_sessions(seen_ids):
     """Zapisuje listę ID sesji do pliku."""
     try:
-        # Konwertujemy na listę i zapisujemy
-        # Ograniczamy historię do np. ostatnich 2000 wpisów, żeby plik nie rósł w nieskończoność
-        limited_list = list(seen_ids)[-2000:] 
+        # Sortujemy dla porządku w pliku
+        limited_list = sorted(list(seen_ids))[-2000:] 
         with open(HISTORY_FILE, 'w') as f:
-            json.dump(limited_list, f)
-        logger.info(f"💾 Zapisano historię ({len(limited_list)} sesji).")
+            json.dump(limited_list, f, indent=2) # indent dla czytelności
+        logger.info(f"💾 Zaktualizowano plik historii ({len(limited_list)} sesji).")
     except Exception as e:
         logger.error(f"❌ Błąd zapisu historii: {e}")
 
@@ -60,7 +72,6 @@ def generate_hash(secret, salt):
     return base64.b64encode(digest).decode('utf-8')
 
 def get_access_token():
-    # logger.info("🔐 Logowanie...") # Mniej spamu w logach co 5 min
     hashed_password = generate_hash(PASSWORD, EMAIL)
     hashed_client_secret = generate_hash(CLIENT_SECRET, CLIENT_ID)
 
@@ -81,7 +92,7 @@ def get_access_token():
         logger.error(f"❌ Błąd logowania: {e}")
         sys.exit(1)
 
-def get_data_from_link(url, token):
+def get_data_from_link(url, token, desc="dane"):
     headers = {"Authorization": f"Bearer {token}"}
     try:
         resp = requests.get(url, headers=headers)
@@ -94,7 +105,7 @@ def get_data_from_link(url, token):
             return s3_resp.json()
         return data
     except Exception as e:
-        logger.error(f"❌ Błąd pobierania danych: {e}")
+        logger.error(f"❌ Błąd pobierania {desc}: {e}")
         return None
 
 def get_session_type_name(session):
@@ -137,12 +148,10 @@ def calculate_remaining_time(session):
         return "N/A"
 
 def check_filters(session):
-    # 1. FILTR TORÓW
     if FILTER_TRACKS:
         track_name = session.get('track', {}).get('track_name', '').lower()
         if not any(f in track_name for f in FILTER_TRACKS): return False
 
-    # 2. FILTR AUT
     if FILTER_CARS:
         session_cars = session.get('cars', [])
         session_car_names = [c.get('car_name', '').lower() for c in session_cars]
@@ -154,13 +163,11 @@ def check_filters(session):
                     break
             if match_car: break
         if not match_car: return False
-
     return True
 
 def is_session_valid(s):
     if s.get('password_protected') is True: return False
     
-    # Check Closed
     reg_expires_str = s.get('open_reg_expires')
     if reg_expires_str:
         try:
@@ -175,10 +182,8 @@ def is_session_valid(s):
 def send_to_discord(sessions, seen_ids):
     if not WEBHOOK_URL: return set()
     
-    # 1. Filtrujemy poprawność (hasło, tory, auta)
     valid_sessions = [s for s in sessions if is_session_valid(s)]
     
-    # 2. Filtrujemy DUPLIKATY (tylko te, których ID nie ma w seen_ids)
     new_sessions = []
     for s in valid_sessions:
         sid = s.get('session_id')
@@ -188,8 +193,7 @@ def send_to_discord(sessions, seen_ids):
     logger.info(f"🧐 Statystyki: Pobranych {len(sessions)} -> Ważnych {len(valid_sessions)} -> NOWYCH {len(new_sessions)}.")
     
     if not new_sessions:
-        logger.info("💤 Brak nowych sesji do wysłania.")
-        return set() # Nic nowego nie doszło
+        return set()
 
     all_embeds = []
     ids_to_add = set()
@@ -228,14 +232,11 @@ def send_to_discord(sessions, seen_ids):
         }
         all_embeds.append(embed)
         
-        # Dodajemy ID do zbioru "widzianych", żeby zapisać po wysłaniu
         if s.get('session_id'):
             ids_to_add.add(s.get('session_id'))
 
-    # Batch sending
     batch_size = 10
     total_sent = 0
-    
     for i in range(0, len(all_embeds), batch_size):
         batch = all_embeds[i : i + batch_size]
         try:
@@ -249,26 +250,27 @@ def send_to_discord(sessions, seen_ids):
     return ids_to_add
 
 def main():
+    # 1. GWARANTUJEMY istnienie pliku
+    ensure_history_file_exists()
+
     token = get_access_token()
-    
-    # 1. Wczytaj historię
     seen_ids = load_seen_sessions()
     logger.info(f"📂 Wczytano historię: {len(seen_ids)} znanych sesji.")
 
-    data = get_data_from_link(SESSIONS_URL, token)
+    data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
     if not data: sys.exit(1)
 
     sessions = data.get('sessions', [])
-    
-    # 2. Wyślij tylko nowe
     newly_sent_ids = send_to_discord(sessions, seen_ids)
     
-    # 3. Zaktualizuj historię jeśli coś wysłaliśmy
+    # 2. ZAPISUJEMY ZAWSZE (nawet jeśli nic nowego, żeby 'touch' plik dla Gita)
+    # Jeśli nie było nowych, zapisujemy stare, żeby Git widział plik.
     if newly_sent_ids:
         updated_seen_ids = seen_ids.union(newly_sent_ids)
         save_seen_sessions(updated_seen_ids)
     else:
-        logger.info("📂 Historia bez zmian.")
+        logger.info("💤 Brak nowych sesji. Odświeżam plik historii (dla Gita).")
+        save_seen_sessions(seen_ids)
 
 if __name__ == "__main__":
     main()
