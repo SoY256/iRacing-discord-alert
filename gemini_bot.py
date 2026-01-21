@@ -21,8 +21,6 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 # Stałe URL
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
-CARS_ASSETS_URL = "https://members-ng.iracing.com/data/car/get"
-CLASSES_ASSETS_URL = "https://members-ng.iracing.com/data/carclass/get"
 
 def generate_hash(secret, salt):
     if not secret or not salt: return ""
@@ -71,94 +69,30 @@ def get_data_from_link(url, token, desc="dane"):
         logger.error(f"❌ Błąd pobierania {desc}: {e}")
         return None
 
-def get_dictionaries(token):
-    # 1. Auta
-    raw_cars = get_data_from_link(CARS_ASSETS_URL, token, "Słownik Aut")
-    car_map = {}
-    if raw_cars:
-        for c in raw_cars:
-            if 'car_id' in c and 'car_name' in c:
-                car_map[str(c['car_id'])] = c['car_name']
+def get_session_type_name(session):
+    """
+    Analizuje event_types i session_types, żeby określić charakter sesji.
+    Priorytet ma event_type (określa całość).
+    """
+    # 1. Sprawdzamy Event Type (Nadrzędny typ)
+    # 2: Practice, 3: Qualify, 4: Time Trial, 5: Race
+    e_types = session.get('event_types', [])
+    for e in e_types:
+        et = e.get('event_type')
+        if et == 5: return "Wyścig"
+        if et == 4: return "Time Trial"
+        if et == 3: return "Kwalifikacje"
+        if et == 2: return "Trening"
+
+    # 2. Jeśli brak event_type, sprawdzamy session_types
+    s_types = session.get('session_types', [])
+    for s in s_types:
+        st = s.get('session_type')
+        if st in [5, 6]: return "Wyścig"
+        if st in [4, 10]: return "Kwalifikacje"
+        if st == 9: return "Rozgrzewka"
     
-    # 2. Klasy
-    raw_classes = get_data_from_link(CLASSES_ASSETS_URL, token, "Słownik Klas")
-    class_map = {}
-    if raw_classes:
-        for cls in raw_classes:
-            cars_ids = [c['car_id'] for c in cls.get('cars_in_class', []) if 'car_id' in c]
-            if 'short_name' in cls and cls['short_name']:
-                class_map[cls['short_name'].lower().strip()] = cars_ids
-            if 'name' in cls and cls['name']:
-                class_map[cls['name'].lower().strip().replace(" ", "")] = cars_ids
-
-    return car_map, class_map
-
-def resolve_cars_clean(session, car_map, class_map):
-    concrete_cars = set()
-    entries = session.get('car_types', []) + session.get('cars', [])
-    if not entries: entries = session.get('car_classes', [])
-
-    for entry in entries:
-        c_id = None
-        type_str = None
-
-        if isinstance(entry, dict):
-            c_id = entry.get('car_id') or entry.get('id')
-            type_str = entry.get('car_type') or entry.get('car_class_short_name')
-        elif isinstance(entry, int):
-            c_id = entry
-        elif isinstance(entry, str):
-            type_str = entry
-
-        if c_id is not None and str(c_id) in car_map:
-            concrete_cars.add(car_map[str(c_id)])
-            continue
-
-        if type_str:
-            clean_type = str(type_str).lower().strip().replace(" ", "")
-            if clean_type in class_map:
-                for car_id in class_map[clean_type]:
-                    if str(car_id) in car_map:
-                        concrete_cars.add(car_map[str(car_id)])
-
-    if not concrete_cars:
-        return ["Nieznane (Brak danych)"]
-
-    return sorted(list(concrete_cars))
-
-def get_session_type(session):
-    st_list = session.get('session_types', [])
-    types_found = []
-    
-    # Mapa ID -> Nazwa
-    type_map = {
-        0: "Trening", 
-        1: "Kwalifikacje",
-        2: "Kwalifikacje", # Czasem lone qualify
-        3: "Trening", # Lone Practice
-        4: "Kwalifikacje", # Open Qualify
-        5: "Wyścig",
-        6: "Wyścig",
-        9: "Rozgrzewka",
-        10: "Kwalifikacje"
-    }
-    
-    for item in st_list:
-        sid = -1
-        if isinstance(item, dict):
-            sid = item.get('session_type')
-        elif isinstance(item, int):
-            sid = item
-            
-        if sid is not None:
-            name = type_map.get(sid, "Sesja")
-            if name not in types_found:
-                types_found.append(name)
-            
-    # Unikalne, zachowując kolejność
-    seen = set()
-    unique = [x for x in types_found if not (x in seen or seen.add(x))]
-    return ", ".join(unique) if unique else "Trening"
+    return "Trening"
 
 def calculate_remaining_time(session):
     try:
@@ -168,18 +102,20 @@ def calculate_remaining_time(session):
         launch_dt = datetime.fromisoformat(launch_str.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
         
+        # Obliczamy całkowity czas trwania sesji
         total_minutes = 0
         total_minutes += session.get('practice_length', 0)
         total_minutes += session.get('qualify_length', 0)
         total_minutes += session.get('race_length', 0) 
         
+        # Czas, który upłynął
         elapsed = (now - launch_dt).total_seconds() / 60
         remaining = total_minutes - elapsed
         
         if remaining < 0:
             return "W trakcie / Końcówka"
         
-        # --- NOWY FORMAT CZASU (1h 25m) ---
+        # Formatowanie godziny i minuty
         hours = int(remaining // 60)
         mins = int(remaining % 60)
         
@@ -191,40 +127,46 @@ def calculate_remaining_time(session):
     except Exception:
         return "N/A"
 
-def send_to_discord(sessions, car_map, class_map):
+def send_to_discord(sessions):
     if not WEBHOOK_URL: return
-    logger.info(f"📨 Wysyłanie {len(sessions)} sesji na Discorda...")
+    
+    # --- FILTROWANIE ---
+    # 1. Tylko sesje BEZ hasła
+    # 2. Sortowanie (opcjonalne, np. po liczbie graczy)
+    public_sessions = [s for s in sessions if s.get('password_protected') is False]
+    
+    logger.info(f"📨 Znaleziono {len(public_sessions)} publicznych sesji. Wysyłam pierwsze 5...")
 
     embeds = []
-    for i, s in enumerate(sessions, 1):
+    # Bierzemy pierwsze 5 przefiltrowanych sesji
+    for i, s in enumerate(public_sessions[:5], 1):
         name = s.get('session_name', 'Bez nazwy')
         
-        # Celowany Debug dla konkretnej sesji
-        if "Adelaide" in name:
-            logger.info(f"🔍🔍🔍 DEBUG DLA SESJI: {name}")
-            logger.info("Zrzucam pełną strukturę JSON, żeby znaleźć kierowców:")
-            logger.info(json.dumps(s, indent=2))
-            logger.info("🔍🔍🔍 KONIEC ZRZUTU")
-
-        track_data = s.get('track', {})
-        if isinstance(track_data, dict):
-            track = track_data.get('track_name', 'Nieznany tor')
-        else:
-            track = "Nieznany tor (ID)"
-            
-        host_data = s.get('host', {})
-        host = host_data.get('display_name', 'Anonim') if isinstance(host_data, dict) else "Anonim"
+        # Tor
+        track = s.get('track', {}).get('track_name', 'Nieznany tor')
         
-        session_type = get_session_type(s)
+        # Host
+        host = s.get('host', {}).get('display_name', 'Anonim')
+        
+        # Typ i Czas
+        session_type = get_session_type_name(s)
         time_left = calculate_remaining_time(s)
         
+        # Miejsca (num_drivers z Twojego JSONa)
         max_d = s.get('max_drivers', 0)
-        reg_d = s.get('num_registered', 0)
-        slots_info = f"{reg_d} / {max_d}"
+        curr_d = s.get('num_drivers', 0)
+        slots_info = f"{curr_d} / {max_d}"
 
-        car_names_list = resolve_cars_clean(s, car_map, class_map)
-        cars_str = ", ".join(car_names_list)
+        # Auta - PROSTO Z JSONA (Klucz "cars")
+        cars_list = s.get('cars', [])
+        car_names = [c.get('car_name', 'Unknown Car') for c in cars_list]
+        
+        # Usuwamy duplikaty i sortujemy
+        unique_cars = sorted(list(set(car_names)))
+        cars_str = ", ".join(unique_cars)
+        
         if len(cars_str) > 900: cars_str = cars_str[:897] + "..."
+        if not cars_str: cars_str = "Brak danych"
 
         embed = {
             "title": f"🏎️ {name}",
@@ -241,27 +183,31 @@ def send_to_discord(sessions, car_map, class_map):
         }
         embeds.append(embed)
 
-    try:
-        requests.post(WEBHOOK_URL, json={"embeds": embeds})
-        logger.info("✅ Powiadomienie wysłane!")
-    except Exception as e:
-        logger.error(f"❌ Błąd Discorda: {e}")
+    if embeds:
+        try:
+            requests.post(WEBHOOK_URL, json={"embeds": embeds})
+            logger.info("✅ Powiadomienie wysłane!")
+        except Exception as e:
+            logger.error(f"❌ Błąd Discorda: {e}")
+    else:
+        logger.info("ℹ️ Brak sesji spełniających kryteria (brak hasła).")
 
 def main():
     token = get_access_token()
-    car_map, class_map = get_dictionaries(token)
+    
+    # Nie potrzebujemy już pobierać słowników aut/klas!
+    # Wszystko jest w głównym zapytaniu.
     
     data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
     if not data: sys.exit(1)
 
     sessions = data.get('sessions', [])
-    logger.info(f"📊 Znaleziono łącznie {len(sessions)} sesji.")
+    logger.info(f"📊 Pobrano łącznie {len(sessions)} sesji (surowe dane).")
     
-    top_5 = sessions[:5]
-    if top_5:
-        send_to_discord(top_5, car_map, class_map)
+    if sessions:
+        send_to_discord(sessions)
     else:
-        logger.info("ℹ️ Brak sesji.")
+        logger.info("ℹ️ Pusta lista sesji.")
 
 if __name__ == "__main__":
     main()
