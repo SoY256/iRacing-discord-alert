@@ -4,7 +4,6 @@ import requests
 import hashlib
 import base64
 import logging
-import time
 import json
 
 # Konfiguracja logowania
@@ -79,24 +78,14 @@ def get_car_mapping(token):
         c_id = car.get('car_id')
         c_name = car.get('car_name')
         if c_id and c_name:
-            car_map[c_id] = c_name # Kluczem jest int
-            car_map[str(c_id)] = c_name # Kluczem jest też string (dla bezpieczeństwa)
+            car_map[c_id] = c_name
+            car_map[str(c_id)] = c_name
             
-    logger.info(f"📚 Zbudowano mapę nazw dla {len(car_map)} samochodów.")
     return car_map
 
 def send_to_discord(sessions, car_map):
     if not WEBHOOK_URL: return
     logger.info(f"📨 Wysyłanie {len(sessions)} sesji na Discorda...")
-
-    # --- DEBUGOWANIE STRUKTURY (To nam powie prawdę) ---
-    if sessions:
-        first_session = sessions[0]
-        cars_debug = first_session.get('car_types', []) or first_session.get('cars', [])
-        logger.info("🔍🔍🔍 DEBUG STRUKTURY AUT (Spójrz tutaj):")
-        logger.info(json.dumps(cars_debug, indent=2))
-        logger.info("🔍🔍🔍 KONIEC DEBUGA")
-    # ---------------------------------------------------
 
     embeds = []
     for i, s in enumerate(sessions, 1):
@@ -108,29 +97,37 @@ def send_to_discord(sessions, car_map):
         car_names_list = []
         
         for car_entry in session_cars:
-            c_id = None
+            final_name = "Nieznane auto"
             
-            # Logika "Sherlocka Holmesa" - szukamy ID wszędzie
+            # --- NOWA LOGIKA ---
             if isinstance(car_entry, dict):
-                # Próbujemy różnych nazw kluczy, które iRacing stosuje zamiennie
-                c_id = car_entry.get('car_id') or car_entry.get('id') or car_entry.get('car_type_id')
-            elif isinstance(car_entry, int):
-                # Czasem lista to po prostu [145, 20, 30]
-                c_id = car_entry
-            
-            # Próba mapowania
-            if c_id is not None:
-                # Konwersja na int i str dla pewności trafienia w słownik
-                if c_id in car_map:
-                    car_names_list.append(car_map[c_id])
-                elif str(c_id) in car_map:
-                    car_names_list.append(car_map[str(c_id)])
-                else:
-                    car_names_list.append(f"Car ID {c_id}") # Przynajmniej zobaczymy numerek
-            else:
-                car_names_list.append("Błąd ID")
+                # 1. Sprawdzamy czy jest ID (liczba)
+                c_id = car_entry.get('car_id') or car_entry.get('id')
+                
+                # 2. Sprawdzamy czy jest TYP (napis, np. "aussiev8")
+                c_type = car_entry.get('car_type')
 
-        # Usuwanie duplikatów (set) i sortowanie
+                if c_id and (c_id in car_map or str(c_id) in car_map):
+                    # Mamy ID -> bierzemy ładną nazwę ze słownika
+                    final_name = car_map.get(c_id) or car_map.get(str(c_id))
+                elif c_type:
+                    # Nie ma ID, ale jest typ (klasa) -> formatujemy napis
+                    # "aussiev8" -> "Aussiev8"
+                    final_name = str(c_type).replace('_', ' ').title()
+                elif c_id:
+                    # Jest ID, ale nie ma w mapie
+                    final_name = f"Car ID {c_id}"
+            
+            elif isinstance(car_entry, int):
+                # Jeśli wpis to po prostu liczba (rzadkie, ale bywa)
+                if car_entry in car_map:
+                    final_name = car_map[car_entry]
+                else:
+                    final_name = f"Car ID {car_entry}"
+
+            car_names_list.append(final_name)
+
+        # Unikalne nazwy i sortowanie
         car_names_list = sorted(list(set(car_names_list)))
         
         cars_str = ", ".join(car_names_list)
