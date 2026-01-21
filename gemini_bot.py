@@ -21,7 +21,7 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
 # --- ZMIENNE FILTRUJĄCE ---
 FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "")
-FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee")
+FILTER_CARS_STR = os.environ.get("FILTER_CARS", "Porsche")
 FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
 FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
 
