@@ -40,7 +40,7 @@ jobs:
         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         FILTER_TRACKS: ${{ vars.FILTER_TRACKS }} 
         FILTER_CARS: ${{ vars.FILTER_CARS }}
-      run: python bot.py
+      run: python gemini_bot.py
 
     - name: DIAGNOSTYKA - Czy plik istnieje?
       run: |
