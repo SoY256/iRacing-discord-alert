@@ -70,12 +70,7 @@ def get_data_from_link(url, token, desc="dane"):
         return None
 
 def get_session_type_name(session):
-    """
-    Analizuje event_types i session_types, żeby określić charakter sesji.
-    Priorytet ma event_type (określa całość).
-    """
-    # 1. Sprawdzamy Event Type (Nadrzędny typ)
-    # 2: Practice, 3: Qualify, 4: Time Trial, 5: Race
+    # 1. Check Event Type (Priority)
     e_types = session.get('event_types', [])
     for e in e_types:
         et = e.get('event_type')
@@ -84,7 +79,7 @@ def get_session_type_name(session):
         if et == 3: return "Kwalifikacje"
         if et == 2: return "Trening"
 
-    # 2. Jeśli brak event_type, sprawdzamy session_types
+    # 2. Check Session Types
     s_types = session.get('session_types', [])
     for s in s_types:
         st = s.get('session_type')
@@ -102,20 +97,17 @@ def calculate_remaining_time(session):
         launch_dt = datetime.fromisoformat(launch_str.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
         
-        # Obliczamy całkowity czas trwania sesji
         total_minutes = 0
         total_minutes += session.get('practice_length', 0)
         total_minutes += session.get('qualify_length', 0)
         total_minutes += session.get('race_length', 0) 
         
-        # Czas, który upłynął
         elapsed = (now - launch_dt).total_seconds() / 60
         remaining = total_minutes - elapsed
         
         if remaining < 0:
             return "W trakcie / Końcówka"
         
-        # Formatowanie godziny i minuty
         hours = int(remaining // 60)
         mins = int(remaining % 60)
         
@@ -127,41 +119,61 @@ def calculate_remaining_time(session):
     except Exception:
         return "N/A"
 
+def is_session_joinable(s):
+    """
+    Filtr decydujący, czy sesja nadaje się do wysłania.
+    1. Musi być publiczna (bez hasła).
+    2. Musi mieć otwartą rejestrację (nie 'Closed').
+    """
+    # 1. Sprawdź hasło
+    if s.get('password_protected') is True:
+        return False
+
+    # 2. Sprawdź czy rejestracja wygasła ("Closed")
+    reg_expires_str = s.get('open_reg_expires')
+    if reg_expires_str:
+        try:
+            reg_dt = datetime.fromisoformat(reg_expires_str.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            
+            # Jeśli "teraz" jest później niż "koniec rejestracji" -> CLOSED
+            if now > reg_dt:
+                return False
+        except ValueError:
+            pass # Jeśli data jest błędna, puszczamy (bezpieczniej)
+
+    return True
+
 def send_to_discord(sessions):
     if not WEBHOOK_URL: return
     
     # --- FILTROWANIE ---
-    # 1. Tylko sesje BEZ hasła
-    # 2. Sortowanie (opcjonalne, np. po liczbie graczy)
-    public_sessions = [s for s in sessions if s.get('password_protected') is False]
+    # Używamy naszej nowej funkcji 'is_session_joinable'
+    valid_sessions = [s for s in sessions if is_session_joinable(s)]
     
-    logger.info(f"📨 Znaleziono {len(public_sessions)} publicznych sesji. Wysyłam pierwsze 5...")
+    logger.info(f"📨 Z {len(sessions)} pobranych sesji, {len(valid_sessions)} jest OTWARTYCH i PUBLICZNYCH.")
+    
+    if not valid_sessions:
+        logger.info("ℹ️ Brak sesji spełniających kryteria.")
+        return
 
     embeds = []
-    # Bierzemy pierwsze 5 przefiltrowanych sesji
-    for i, s in enumerate(public_sessions[:5], 1):
+    # Bierzemy pierwsze 5 pasujących
+    for i, s in enumerate(valid_sessions[:5], 1):
         name = s.get('session_name', 'Bez nazwy')
-        
-        # Tor
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
-        
-        # Host
         host = s.get('host', {}).get('display_name', 'Anonim')
         
-        # Typ i Czas
         session_type = get_session_type_name(s)
         time_left = calculate_remaining_time(s)
         
-        # Miejsca (num_drivers z Twojego JSONa)
         max_d = s.get('max_drivers', 0)
         curr_d = s.get('num_drivers', 0)
         slots_info = f"{curr_d} / {max_d}"
 
-        # Auta - PROSTO Z JSONA (Klucz "cars")
+        # Auta z JSONa
         cars_list = s.get('cars', [])
         car_names = [c.get('car_name', 'Unknown Car') for c in cars_list]
-        
-        # Usuwamy duplikaty i sortujemy
         unique_cars = sorted(list(set(car_names)))
         cars_str = ", ".join(unique_cars)
         
@@ -183,26 +195,20 @@ def send_to_discord(sessions):
         }
         embeds.append(embed)
 
-    if embeds:
-        try:
-            requests.post(WEBHOOK_URL, json={"embeds": embeds})
-            logger.info("✅ Powiadomienie wysłane!")
-        except Exception as e:
-            logger.error(f"❌ Błąd Discorda: {e}")
-    else:
-        logger.info("ℹ️ Brak sesji spełniających kryteria (brak hasła).")
+    try:
+        requests.post(WEBHOOK_URL, json={"embeds": embeds})
+        logger.info("✅ Powiadomienie wysłane!")
+    except Exception as e:
+        logger.error(f"❌ Błąd Discorda: {e}")
 
 def main():
     token = get_access_token()
-    
-    # Nie potrzebujemy już pobierać słowników aut/klas!
-    # Wszystko jest w głównym zapytaniu.
     
     data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
     if not data: sys.exit(1)
 
     sessions = data.get('sessions', [])
-    logger.info(f"📊 Pobrano łącznie {len(sessions)} sesji (surowe dane).")
+    logger.info(f"📊 Pobrano łącznie {len(sessions)} sesji.")
     
     if sessions:
         send_to_discord(sessions)
