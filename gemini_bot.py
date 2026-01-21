@@ -20,7 +20,7 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
 # --- NOWE ZMIENNE FILTRUJĄCE ---
 # Pobieramy string i dzielimy go po przecinkach na listę, usuwając puste spacje
-FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "")
+FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "bull,silver")
 FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee,porsche")
 
 # Tworzymy listy filtrów (tylko jeśli coś wpisano)
