@@ -128,41 +128,42 @@ def resolve_cars_clean(session, car_map, class_map):
 
 def get_session_type(session):
     """
-    Tłumaczy ID typu sesji na nazwę.
-    iRacing zwraca INT (np. 3), a nie STRING.
+    Rozszerzona mapa typów sesji.
+    Analizuje listę 'session_types' zwracaną przez API.
     """
-    st = session.get('session_types', [])
-    types_pl = []
+    st_list = session.get('session_types', [])
+    types_found = []
     
-    # Mapa znanych ID sesji iRacing
-    type_map = {
-        0: "Trening", # Practice
-        1: "Kwalifikacje",
-        2: "Kwalifikacje",
-        3: "Rozgrzewka", # Warmup
-        4: "Wyścig", # Race
-        5: "Kwalifikacje",
-        6: "Wyścig"
-    }
+    # Mapa ID -> Nazwa (na podstawie dokumentacji iRacing)
+    # 3: Practice, 4: Qualify, 5: Race (częste w oficjalnych)
+    # Hosted sessions używają czasem innych ID.
     
-    for t in st:
-        val = t.get('session_type')
-        
-        # Jeśli to liczba (ID) - mapujemy
-        if isinstance(val, int):
-            name = type_map.get(val, "Sesja")
-            if name not in types_pl:
-                types_pl.append(name)
-        
-        # Jeśli to string (fallback dla dziwnych danych)
-        elif isinstance(val, str):
-            val_s = val.lower()
-            if 'pract' in val_s: types_pl.append("Trening")
-            elif 'qual' in val_s: types_pl.append("Kwalifikacje")
-            elif 'race' in val_s: types_pl.append("Wyścig")
-            elif 'warm' in val_s: types_pl.append("Rozgrzewka")
-        
-    return ", ".join(types_pl) if types_pl else "Trening"
+    for item in st_list:
+        # Może być słownikiem {'session_type': 3} lub intem
+        sid = -1
+        if isinstance(item, dict):
+            sid = item.get('session_type')
+        elif isinstance(item, int):
+            sid = item
+            
+        if sid is not None:
+            # Tłumaczenie kodów
+            if sid == 3: types_found.append("Trening")     # Lone Practice
+            elif sid == 4: types_found.append("Kwalifikacje") # Open Qualify
+            elif sid == 5: types_found.append("Wyścig")
+            elif sid == 6: types_found.append("Wyścig")    # Heat Racing
+            elif sid == 9: types_found.append("Rozgrzewka")
+            elif sid == 10: types_found.append("Kwalifikacje")
+            # Fallback dla nieznanych ID, ale powszechnych
+            elif sid == 0: types_found.append("Trening") 
+            elif sid == 1: types_found.append("Trening")
+            elif sid == 2: types_found.append("Kwalifikacje")
+            
+    # Usuwanie duplikatów z zachowaniem kolejności
+    seen = set()
+    unique_types = [x for x in types_found if not (x in seen or seen.add(x))]
+    
+    return ", ".join(unique_types) if unique_types else "Trening"
 
 def calculate_remaining_time(session):
     try:
@@ -181,10 +182,9 @@ def calculate_remaining_time(session):
         remaining = total_minutes - elapsed
         
         if remaining < 0:
-            return "Zakończona / Końcówka"
+            return "W trakcie / Końcówka"
         
         return f"{int(remaining)} min"
-        
     except Exception:
         return "N/A"
 
@@ -195,19 +195,42 @@ def send_to_discord(sessions, car_map, class_map):
     embeds = []
     for i, s in enumerate(sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
-        track = s.get('track', {}).get('track_name', 'Nieznany tor')
-        host = s.get('host', {}).get('display_name', 'Anonim')
         
+        # --- NAPRAWA LINII 192 (track) ---
+        track_data = s.get('track', {})
+        # Czasem track to string (ID), a czasem obiekt
+        if isinstance(track_data, dict):
+            track = track_data.get('track_name', 'Nieznany tor')
+        else:
+            track = "Nieznany tor (ID)"
+            
+        host_data = s.get('host', {})
+        host = host_data.get('display_name', 'Anonim') if isinstance(host_data, dict) else "Anonim"
+        
+        # Logika
         session_type = get_session_type(s)
         time_left = calculate_remaining_time(s)
         
-        max_drivers = s.get('max_drivers', 0)
-        current_drivers = s.get('num_registered', 0)
-        slots_info = f"{current_drivers} / {max_drivers}"
+        # --- DIAGNOSTYKA MIEJSC ---
+        # Sprawdzamy surowe dane w logach
+        max_d = s.get('max_drivers', 0)
+        reg_d = s.get('num_registered', 0)
+        
+        # Logujemy surowy JSON dla pierwszej sesji, żeby znaleźć właściwe pole
+        if i == 1:
+            logger.info("🔍 DEBUG SESJI #1 (Sprawdź te pola):")
+            logger.info(f"   max_drivers: {max_d}")
+            logger.info(f"   num_registered: {reg_d}")
+            logger.info(f"   session_types: {s.get('session_types')}")
+            # Czasem jest pole 'counts'
+            if 'counts' in s:
+                logger.info(f"   counts: {s.get('counts')}")
 
+        slots_info = f"{reg_d} / {max_d}"
+
+        # Auta
         car_names_list = resolve_cars_clean(s, car_map, class_map)
         cars_str = ", ".join(car_names_list)
-        
         if len(cars_str) > 900: cars_str = cars_str[:897] + "..."
 
         embed = {
