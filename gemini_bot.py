@@ -19,11 +19,23 @@ EMAIL = os.environ.get("IR_EMAIL", "").strip()
 PASSWORD = os.environ.get("IR_PASSWORD", "").strip()
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
-# --- ZMIENNE FILTRUJĄCE ---
-FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "")
-FILTER_CARS_STR = os.environ.get("FILTER_CARS", "Porsche")
-FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
-FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
+# --- NAPRAWIONE FILTRY ---
+# 1. Pobieramy z env
+env_tracks = os.environ.get("FILTER_TRACKS", "").strip()
+env_cars = os.environ.get("FILTER_CARS", "").strip()
+
+# 2. Jeśli env jest pusty, używamy Twoich domyślnych wartości HARDCODED
+# WPISZ SWOJE DOMYŚLNE WARTOŚCI TUTAJ, JEŚLI CHCESZ:
+DEFAULT_TRACKS = ""       # np. "Spa, Monza"
+DEFAULT_CARS = "Vee"  # np. "Porsche, Ferrari" (To o co prosiłeś)
+
+# Logika: Użyj Env, a jak pusty to Default
+final_tracks_str = env_tracks if env_tracks else DEFAULT_TRACKS
+final_cars_str = env_cars if env_cars else DEFAULT_CARS
+
+# Tworzenie list
+FILTER_TRACKS = [x.strip().lower() for x in final_tracks_str.split(',') if x.strip()]
+FILTER_CARS = [x.strip().lower() for x in final_cars_str.split(',') if x.strip()]
 
 # Stałe
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
@@ -31,23 +43,21 @@ SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
 HISTORY_FILE = "seen_sessions.json"
 
 def ensure_history_file_exists():
-    """Upewnia się, że plik historii istnieje."""
     if not os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'w') as f:
                 json.dump([], f)
-            logger.info(f"🆕 Utworzono nowy plik historii: {HISTORY_FILE}")
+            logger.info(f"🆕 Utworzono pusty plik historii: {HISTORY_FILE}")
         except Exception as e:
-            logger.error(f"❌ Nie udało się utworzyć pliku historii: {e}")
+            logger.error(f"❌ Błąd tworzenia pliku: {e}")
 
 def load_seen_sessions():
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r') as f:
-                data = json.load(f)
-                return set(data)
+                return set(json.load(f))
         except Exception as e:
-            logger.warning(f"⚠️ Błąd odczytu: {e}")
+            logger.warning(f"⚠️ Błąd odczytu historii: {e}")
     return set()
 
 def save_seen_sessions(seen_ids):
@@ -57,7 +67,7 @@ def save_seen_sessions(seen_ids):
             json.dump(limited_list, f, indent=2)
         logger.info(f"💾 Zapisano historię ({len(limited_list)} sesji).")
     except Exception as e:
-        logger.error(f"❌ Błąd zapisu: {e}")
+        logger.error(f"❌ Błąd zapisu historii: {e}")
 
 def generate_hash(secret, salt):
     if not secret or not salt: return ""
@@ -136,24 +146,35 @@ def calculate_remaining_time(session):
     except Exception: return "N/A"
 
 def check_filters(session):
+    # Logika: Jeśli lista filtrów jest PUSTA, zwracamy True (pokaż wszystko).
+    # Ale teraz upewniliśmy się na początku pliku, że jeśli chcesz Porsche, to lista nie jest pusta.
+
+    # 1. TOR
     if FILTER_TRACKS:
         track_name = session.get('track', {}).get('track_name', '').lower()
         if not any(f in track_name for f in FILTER_TRACKS): return False
+
+    # 2. AUTO
     if FILTER_CARS:
         session_cars = session.get('cars', [])
         session_car_names = [c.get('car_name', '').lower() for c in session_cars]
+        
         match_car = False
         for s_car in session_car_names:
             for f_car in FILTER_CARS:
+                # Sprawdzamy czy fraza (np. "porsche") jest w nazwie auta (np. "porsche 911 gt3")
                 if f_car in s_car:
                     match_car = True
                     break
             if match_car: break
+        
         if not match_car: return False
+        
     return True
 
 def is_session_valid(s):
     if s.get('password_protected') is True: return False
+    
     reg_expires_str = s.get('open_reg_expires')
     if reg_expires_str:
         try:
@@ -161,21 +182,24 @@ def is_session_valid(s):
             now = datetime.now(timezone.utc)
             if now > reg_dt: return False
         except ValueError: pass
+
     if not check_filters(s): return False
     return True
 
 def send_to_discord(sessions, seen_ids):
     if not WEBHOOK_URL: return set()
     
+    # Najpierw filtrujemy merytorycznie
     valid_sessions = [s for s in sessions if is_session_valid(s)]
     
+    # Potem sprawdzamy duplikaty
     new_sessions = []
     for s in valid_sessions:
         sid = s.get('session_id')
         if sid and sid not in seen_ids:
             new_sessions.append(s)
     
-    logger.info(f"🧐 Statystyki: Wszystkie={len(sessions)} | Pasujące={len(valid_sessions)} | NOWE={len(new_sessions)}")
+    logger.info(f"🧐 Statystyki: Wszystkie={len(sessions)} | Zgodne z filtrem={len(valid_sessions)} | NOWE={len(new_sessions)}")
     
     if not new_sessions:
         return set()
@@ -231,6 +255,14 @@ def send_to_discord(sessions, seen_ids):
     return ids_to_add
 
 def main():
+    # 1. LOGOWANIE FILTRÓW (Bardzo ważne dla Ciebie)
+    print("="*40)
+    print(f"DEBUG: Pobrany string filtrów torów (ENV): '{env_tracks}'")
+    print(f"DEBUG: Pobrany string filtrów aut (ENV):   '{env_cars}'")
+    print(f"🔧 AKTYWNE FILTRY TORÓW: {FILTER_TRACKS}")
+    print(f"🔧 AKTYWNE FILTRY AUT:   {FILTER_CARS}")
+    print("="*40)
+
     ensure_history_file_exists()
 
     token = get_access_token()
@@ -243,12 +275,11 @@ def main():
     sessions = data.get('sessions', [])
     newly_sent_ids = send_to_discord(sessions, seen_ids)
     
-    # AKTUALIZACJA I ZAPIS (ZAWSZE!)
     if newly_sent_ids:
         updated_seen_ids = seen_ids.union(newly_sent_ids)
         save_seen_sessions(updated_seen_ids)
     else:
-        logger.info("💤 Brak nowych sesji. Odświeżam timestamp pliku (dla Gita).")
+        logger.info("💤 Brak nowych sesji. Zapisuję stan.")
         save_seen_sessions(seen_ids)
 
 if __name__ == "__main__":
