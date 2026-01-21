@@ -125,19 +125,13 @@ def resolve_cars_clean(session, car_map, class_map):
                     if str(car_id) in car_map:
                         concrete_cars.add(car_map[str(car_id)])
 
-    # Filtrowanie "Anty-Śmieciowe":
-    # iRacing czasem zwraca "Sportscar", "Road", "Audi" jako nazwy klas,
-    # które nie są mapowane na konkretne auta w słowniku klas.
-    # Jeśli mamy już konkretne auta, ignorujemy resztę.
-    
+    # Filtrowanie "Anty-Śmieciowe"
     if not concrete_cars:
         return ["Nieznane (Brak danych)"]
 
     return sorted(list(concrete_cars))
 
 def get_session_type(session):
-    # Proste tłumaczenie typu sesji
-    # practice, qualify, race
     st = session.get('session_types', [])
     types_pl = []
     
@@ -151,31 +145,23 @@ def get_session_type(session):
     return ", ".join(types_pl) if types_pl else "Trening"
 
 def calculate_remaining_time(session):
-    # iRacing podaje czas w minutach w polach np. 'practice_length', 'race_laps' etc.
-    # Ale najłatwiej obliczyć to na podstawie launch_at + duration
     try:
-        # launch_at wygląda tak: "2024-05-20T10:00:00Z"
         launch_str = session.get('launch_at')
         if not launch_str: return "Nieznany"
         
-        # Konwersja czasu
         launch_dt = datetime.fromisoformat(launch_str.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
         
-        # Całkowity czas trwania (suma minut)
         total_minutes = 0
         total_minutes += session.get('practice_length', 0)
         total_minutes += session.get('qualify_length', 0)
-        # Wyścig może być na okrążenia, wtedy czas jest trudny do estymacji, 
-        # ale jeśli jest na czas (race_length), to dodajemy.
         total_minutes += session.get('race_length', 0) 
         
-        # Ile minęło od startu
         elapsed = (now - launch_dt).total_seconds() / 60
         remaining = total_minutes - elapsed
         
         if remaining < 0:
-            return "Zakończona / Ostatnie okrążenia"
+            return "Zakończona / Końcówka"
         
         return f"{int(remaining)} min"
         
@@ -189,4 +175,61 @@ def send_to_discord(sessions, car_map, class_map):
     embeds = []
     for i, s in enumerate(sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
-        track =
+        # Tuta był błąd w poprzednim wklejeniu, teraz jest poprawnie:
+        track = s.get('track', {}).get('track_name', 'Nieznany tor')
+        host = s.get('host', {}).get('display_name', 'Anonim')
+        
+        # Nowe pola
+        session_type = get_session_type(s)
+        time_left = calculate_remaining_time(s)
+        
+        # Miejsca
+        max_drivers = s.get('max_drivers', 0)
+        current_drivers = s.get('num_registered', 0)
+        slots_info = f"{current_drivers} / {max_drivers}"
+
+        # Auta (Czysta lista)
+        car_names_list = resolve_cars_clean(s, car_map, class_map)
+        cars_str = ", ".join(car_names_list)
+        
+        if len(cars_str) > 900: cars_str = cars_str[:897] + "..."
+
+        embed = {
+            "title": f"🏎️ {name}",
+            "color": 3066993,
+            "fields": [
+                {"name": "📍 Tor", "value": track, "inline": True},
+                {"name": "👤 Host", "value": host, "inline": True},
+                {"name": "⏳ Czas", "value": time_left, "inline": True},
+                {"name": "🏁 Typ", "value": session_type, "inline": True},
+                {"name": "👥 Miejsca", "value": slots_info, "inline": True},
+                {"name": "🚗 Auta", "value": cars_str, "inline": False}
+            ],
+            "footer": {"text": f"ID Sesji: {s.get('session_id', 'N/A')}"}
+        }
+        embeds.append(embed)
+
+    try:
+        requests.post(WEBHOOK_URL, json={"embeds": embeds})
+        logger.info("✅ Powiadomienie wysłane!")
+    except Exception as e:
+        logger.error(f"❌ Błąd Discorda: {e}")
+
+def main():
+    token = get_access_token()
+    car_map, class_map = get_dictionaries(token)
+    
+    data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
+    if not data: sys.exit(1)
+
+    sessions = data.get('sessions', [])
+    logger.info(f"📊 Znaleziono łącznie {len(sessions)} sesji.")
+    
+    top_5 = sessions[:5]
+    if top_5:
+        send_to_discord(top_5, car_map, class_map)
+    else:
+        logger.info("ℹ️ Brak sesji.")
+
+if __name__ == "__main__":
+    main()
