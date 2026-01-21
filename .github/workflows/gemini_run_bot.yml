@@ -1,16 +1,23 @@
-name: Gemini - iRacing Bot
+name: iRacing Bot 5min
 
-# Tylko ręczne uruchamianie przyciskiem
 on:
-  workflow_dispatch: # Tylko ręczne uruchamianie przyciskiem
+  # schedule:
+   # - cron: '*/5 * * * *' # Co 5 minut
+  workflow_dispatch: # Przycisk do ręcznego uruchomienia
+
+# Bez tego sekcja 'Read and write permissions' w ustawieniach nic nie da
+permissions:
+  contents: write
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Pobranie kodu
+    - name: Pobranie kodu (Full History)
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0 # Ważne: pobiera pełną historię, ułatwia pushowanie
 
     - name: Konfiguracja Pythona
       uses: actions/setup-python@v4
@@ -20,6 +27,10 @@ jobs:
     - name: Instalacja bibliotek
       run: pip install requests
 
+    - name: Pobranie zmian z serwera (Rebase)
+      # Zabezpieczenie przed konfliktem, gdyby plik zmienił się w międzyczasie
+      run: git pull --rebase origin main || echo "Repozytorium jest aktualne"
+
     - name: Uruchomienie Bota
       env:
         IR_CLIENT_ID: ${{ secrets.IR_CLIENT_ID }}
@@ -27,4 +38,34 @@ jobs:
         IR_EMAIL: ${{ secrets.IR_EMAIL }}
         IR_PASSWORD: ${{ secrets.IR_PASSWORD }}
         DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      run: python gemini_bot.py
+        FILTER_TRACKS: ${{ vars.FILTER_TRACKS }} 
+        FILTER_CARS: ${{ vars.FILTER_CARS }}
+      run: python bot.py
+
+    - name: DIAGNOSTYKA - Czy plik istnieje?
+      run: |
+        echo "Sprawdzam listę plików w folderze:"
+        ls -la
+        if [ -f seen_sessions.json ]; then
+            echo "✅ Plik seen_sessions.json ISTNIEJE."
+            cat seen_sessions.json
+        else
+            echo "❌ Plik seen_sessions.json NIE ISTNIEJE!"
+        fi
+
+    - name: Zapisanie stanu (Commit & Push)
+      run: |
+        git config --global user.name 'iRacing Bot'
+        git config --global user.email 'bot@noreply.github.com'
+        
+        # Dodajemy plik do śledzenia
+        git add seen_sessions.json
+        
+        # Sprawdzamy status
+        git status
+        
+        # Commitujemy tylko jeśli są zmiany
+        git diff --staged --quiet || git commit -m "Aktualizacja historii sesji [skip ci]"
+        
+        # Wypychamy zmiany na serwer (do gałęzi main)
+        git push origin HEAD:main
