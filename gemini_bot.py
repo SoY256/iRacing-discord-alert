@@ -94,9 +94,7 @@ def get_dictionaries(token):
     return car_map, class_map
 
 def resolve_cars_clean(session, car_map, class_map):
-    """Zwraca tylko konkretne auta, bez generycznych grup."""
     concrete_cars = set()
-    
     entries = session.get('car_types', []) + session.get('cars', [])
     if not entries: entries = session.get('car_classes', [])
 
@@ -112,12 +110,10 @@ def resolve_cars_clean(session, car_map, class_map):
         elif isinstance(entry, str):
             type_str = entry
 
-        # 1. Konkretne ID
         if c_id is not None and str(c_id) in car_map:
             concrete_cars.add(car_map[str(c_id)])
             continue
 
-        # 2. Klasa (rozpakowujemy na auta)
         if type_str:
             clean_type = str(type_str).lower().strip().replace(" ", "")
             if clean_type in class_map:
@@ -125,22 +121,46 @@ def resolve_cars_clean(session, car_map, class_map):
                     if str(car_id) in car_map:
                         concrete_cars.add(car_map[str(car_id)])
 
-    # Filtrowanie "Anty-Śmieciowe"
     if not concrete_cars:
         return ["Nieznane (Brak danych)"]
 
     return sorted(list(concrete_cars))
 
 def get_session_type(session):
+    """
+    Tłumaczy ID typu sesji na nazwę.
+    iRacing zwraca INT (np. 3), a nie STRING.
+    """
     st = session.get('session_types', [])
     types_pl = []
     
+    # Mapa znanych ID sesji iRacing
+    type_map = {
+        0: "Trening", # Practice
+        1: "Kwalifikacje",
+        2: "Kwalifikacje",
+        3: "Rozgrzewka", # Warmup
+        4: "Wyścig", # Race
+        5: "Kwalifikacje",
+        6: "Wyścig"
+    }
+    
     for t in st:
-        t_type = t.get('session_type', '').lower()
-        if 'practice' in t_type: types_pl.append("Trening")
-        elif 'qualif' in t_type: types_pl.append("Kwalifikacje")
-        elif 'race' in t_type: types_pl.append("Wyścig")
-        elif 'warm' in t_type: types_pl.append("Rozgrzewka")
+        val = t.get('session_type')
+        
+        # Jeśli to liczba (ID) - mapujemy
+        if isinstance(val, int):
+            name = type_map.get(val, "Sesja")
+            if name not in types_pl:
+                types_pl.append(name)
+        
+        # Jeśli to string (fallback dla dziwnych danych)
+        elif isinstance(val, str):
+            val_s = val.lower()
+            if 'pract' in val_s: types_pl.append("Trening")
+            elif 'qual' in val_s: types_pl.append("Kwalifikacje")
+            elif 'race' in val_s: types_pl.append("Wyścig")
+            elif 'warm' in val_s: types_pl.append("Rozgrzewka")
         
     return ", ".join(types_pl) if types_pl else "Trening"
 
@@ -175,20 +195,16 @@ def send_to_discord(sessions, car_map, class_map):
     embeds = []
     for i, s in enumerate(sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
-        # Tuta był błąd w poprzednim wklejeniu, teraz jest poprawnie:
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
         host = s.get('host', {}).get('display_name', 'Anonim')
         
-        # Nowe pola
         session_type = get_session_type(s)
         time_left = calculate_remaining_time(s)
         
-        # Miejsca
         max_drivers = s.get('max_drivers', 0)
         current_drivers = s.get('num_registered', 0)
         slots_info = f"{current_drivers} / {max_drivers}"
 
-        # Auta (Czysta lista)
         car_names_list = resolve_cars_clean(s, car_map, class_map)
         cars_str = ", ".join(car_names_list)
         
