@@ -20,7 +20,8 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 # Stałe URL
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
-CARS_ASSETS_URL = "https://members-ng.iracing.com/data/car/get"
+CARS_ASSETS_URL = "https://members-ng.iracing.com/data/car/get"      # Słownik Aut
+CLASSES_ASSETS_URL = "https://members-ng.iracing.com/data/carclass/get" # Słownik Klas (NOWOŚĆ)
 
 def generate_hash(secret, salt):
     if not secret or not salt: return ""
@@ -69,21 +70,101 @@ def get_data_from_link(url, token, desc="dane"):
         logger.error(f"❌ Błąd pobierania {desc}: {e}")
         return None
 
-def get_car_mapping(token):
-    raw_data = get_data_from_link(CARS_ASSETS_URL, token, "Słownik Aut")
-    if not raw_data: return {}
-    
+def get_dictionaries(token):
+    """
+    Pobiera i buduje dwie mapy:
+    1. car_map: ID Auta -> Nazwa Auta (np. 145 -> "Ferrari 296 GT3")
+    2. class_map: Nazwa Klasy (lowercase) -> Lista ID Aut (np. "gt3" -> [145, 146...])
+    """
+    # 1. Pobieranie Aut
+    raw_cars = get_data_from_link(CARS_ASSETS_URL, token, "Słownik Aut")
     car_map = {}
-    for car in raw_data:
-        c_id = car.get('car_id')
-        c_name = car.get('car_name')
-        if c_id and c_name:
-            car_map[c_id] = c_name
-            car_map[str(c_id)] = c_name
+    if raw_cars:
+        for c in raw_cars:
+            if 'car_id' in c and 'car_name' in c:
+                car_map[c['car_id']] = c['car_name']
+    
+    # 2. Pobieranie Klas (To jest klucz do rozwiązania Twojego problemu)
+    raw_classes = get_data_from_link(CLASSES_ASSETS_URL, token, "Słownik Klas")
+    class_map = {} # Klucz: nazwa klasy (lower), Wartość: lista ID aut
+    
+    if raw_classes:
+        for cls in raw_classes:
+            # Nazwa klasy, np. "GT3 Class"
+            cls_name = cls.get('name', '').lower()
+            cls_short = cls.get('short_name', '').lower()
             
-    return car_map
+            # Wyciągamy listę ID aut w tej klasie
+            cars_in_class = [c['car_id'] for c in cls.get('cars_in_class', []) if 'car_id' in c]
+            
+            # Mapujemy zarówno pełną nazwę jak i skróconą
+            if cls_name: class_map[cls_name] = cars_in_class
+            if cls_short: class_map[cls_short] = cars_in_class
+            
+            # Czasem iRacing używa nazw typu "gt3" jako klucza, więc usuwamy spacje dla pewności
+            if cls_name: class_map[cls_name.replace(" ", "")] = cars_in_class
 
-def send_to_discord(sessions, car_map):
+    logger.info(f"📚 Zbudowano słowniki: {len(car_map)} aut, {len(class_map)} klas.")
+    return car_map, class_map
+
+def resolve_cars_for_session(session, car_map, class_map):
+    """Inteligentne tłumaczenie zawartości sesji na listę konkretnych aut."""
+    resolved_car_names = set()
+    
+    # Pobieramy surowe dane o autach/klasach z sesji
+    # Mogą być w: car_types (napisy), cars (obiekty), car_classes (obiekty)
+    entries = session.get('car_types', []) + session.get('cars', []) + session.get('car_classes', [])
+    
+    for entry in entries:
+        # Przypadek 1: Mamy konkretne ID auta (car_id)
+        c_id = None
+        if isinstance(entry, dict):
+            c_id = entry.get('car_id') or entry.get('id')
+        elif isinstance(entry, int):
+            c_id = entry
+            
+        if c_id and c_id in car_map:
+            resolved_car_names.add(car_map[c_id])
+            continue
+
+        # Przypadek 2: Mamy nazwę klasy/typu (np. "gt3", "aussiev8")
+        type_str = ""
+        if isinstance(entry, dict):
+            type_str = entry.get('car_type') or entry.get('name') or entry.get('car_class_short_name')
+        elif isinstance(entry, str):
+            type_str = entry
+            
+        if type_str:
+            type_key = str(type_str).lower().strip().replace(" ", "")
+            
+            # Szukamy tej nazwy w naszej mapie klas
+            # Przeszukujemy klucze mapy, sprawdzając czy 'type_key' jest częścią nazwy klasy
+            # np. jeśli sesja ma "gt3", a my mamy klasę "imsa gt3", to może być match
+            
+            found_class_cars = []
+            
+            # Dokładne dopasowanie
+            if type_key in class_map:
+                found_class_cars = class_map[type_key]
+            else:
+                # Luźne dopasowanie (jeśli "gt3" jest w nazwie klasy)
+                for k, v in class_map.items():
+                    if type_key == k or (len(type_key) > 2 and type_key in k):
+                        found_class_cars.extend(v)
+            
+            if found_class_cars:
+                # Zamieniamy znalezione ID aut na ich nazwy
+                for cid in found_class_cars:
+                    if cid in car_map:
+                        resolved_car_names.add(car_map[cid])
+            else:
+                # Jeśli nie udało się rozpakować klasy, dajemy chociaż jej nazwę
+                resolved_car_names.add(str(type_str).title())
+
+    # Sortowanie alfabetyczne
+    return sorted(list(resolved_car_names))
+
+def send_to_discord(sessions, car_map, class_map):
     if not WEBHOOK_URL: return
     logger.info(f"📨 Wysyłanie {len(sessions)} sesji na Discorda...")
 
@@ -93,46 +174,16 @@ def send_to_discord(sessions, car_map):
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
         host = s.get('host', {}).get('display_name', 'Anonim')
         
-        session_cars = s.get('car_types', []) or s.get('cars', [])
-        car_names_list = []
-        
-        for car_entry in session_cars:
-            final_name = "Nieznane auto"
-            
-            # --- NOWA LOGIKA ---
-            if isinstance(car_entry, dict):
-                # 1. Sprawdzamy czy jest ID (liczba)
-                c_id = car_entry.get('car_id') or car_entry.get('id')
-                
-                # 2. Sprawdzamy czy jest TYP (napis, np. "aussiev8")
-                c_type = car_entry.get('car_type')
-
-                if c_id and (c_id in car_map or str(c_id) in car_map):
-                    # Mamy ID -> bierzemy ładną nazwę ze słownika
-                    final_name = car_map.get(c_id) or car_map.get(str(c_id))
-                elif c_type:
-                    # Nie ma ID, ale jest typ (klasa) -> formatujemy napis
-                    # "aussiev8" -> "Aussiev8"
-                    final_name = str(c_type).replace('_', ' ').title()
-                elif c_id:
-                    # Jest ID, ale nie ma w mapie
-                    final_name = f"Car ID {c_id}"
-            
-            elif isinstance(car_entry, int):
-                # Jeśli wpis to po prostu liczba (rzadkie, ale bywa)
-                if car_entry in car_map:
-                    final_name = car_map[car_entry]
-                else:
-                    final_name = f"Car ID {car_entry}"
-
-            car_names_list.append(final_name)
-
-        # Unikalne nazwy i sortowanie
-        car_names_list = sorted(list(set(car_names_list)))
+        # --- ROZWIĄZYWANIE NAZW AUT ---
+        car_names_list = resolve_cars_for_session(s, car_map, class_map)
         
         cars_str = ", ".join(car_names_list)
-        if len(cars_str) > 500: cars_str = cars_str[:497] + "..."
-        if not cars_str: cars_str = "Brak danych"
+        
+        # Limity Discorda (pole value max 1024 znaki)
+        if len(cars_str) > 900: 
+            cars_str = cars_str[:897] + "..."
+        if not cars_str: 
+            cars_str = "Brak danych / Wszystkie auta"
 
         embed = {
             "title": f"🏎️ Sesja: {name}",
@@ -154,7 +205,9 @@ def send_to_discord(sessions, car_map):
 
 def main():
     token = get_access_token()
-    car_map = get_car_mapping(token)
+    
+    # Pobieramy oba słowniki (Auta i Klasy)
+    car_map, class_map = get_dictionaries(token)
     
     data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
     if not data: sys.exit(1)
@@ -164,7 +217,7 @@ def main():
     
     top_5 = sessions[:5]
     if top_5:
-        send_to_discord(top_5, car_map)
+        send_to_discord(top_5, car_map, class_map)
     else:
         logger.info("ℹ️ Brak sesji.")
 
