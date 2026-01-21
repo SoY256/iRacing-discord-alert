@@ -20,8 +20,8 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 # Stałe URL
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
-CARS_ASSETS_URL = "https://members-ng.iracing.com/data/car/get"      # Słownik Aut
-CLASSES_ASSETS_URL = "https://members-ng.iracing.com/data/carclass/get" # Słownik Klas (NOWOŚĆ)
+CARS_ASSETS_URL = "https://members-ng.iracing.com/data/car/get"
+CLASSES_ASSETS_URL = "https://members-ng.iracing.com/data/carclass/get"
 
 def generate_hash(secret, salt):
     if not secret or not salt: return ""
@@ -71,97 +71,104 @@ def get_data_from_link(url, token, desc="dane"):
         return None
 
 def get_dictionaries(token):
-    """
-    Pobiera i buduje dwie mapy:
-    1. car_map: ID Auta -> Nazwa Auta (np. 145 -> "Ferrari 296 GT3")
-    2. class_map: Nazwa Klasy (lowercase) -> Lista ID Aut (np. "gt3" -> [145, 146...])
-    """
-    # 1. Pobieranie Aut
+    """Buduje mapy aut i klas."""
+    # 1. Auta
     raw_cars = get_data_from_link(CARS_ASSETS_URL, token, "Słownik Aut")
-    car_map = {}
+    car_map = {} # ID -> Nazwa
+    
     if raw_cars:
         for c in raw_cars:
             if 'car_id' in c and 'car_name' in c:
                 car_map[c['car_id']] = c['car_name']
+                car_map[str(c['car_id'])] = c['car_name'] # String version
     
-    # 2. Pobieranie Klas (To jest klucz do rozwiązania Twojego problemu)
+    # 2. Klasy (Tylko ścisłe dopasowanie!)
     raw_classes = get_data_from_link(CLASSES_ASSETS_URL, token, "Słownik Klas")
-    class_map = {} # Klucz: nazwa klasy (lower), Wartość: lista ID aut
+    class_map = {} 
     
     if raw_classes:
         for cls in raw_classes:
-            # Nazwa klasy, np. "GT3 Class"
-            cls_name = cls.get('name', '').lower()
-            cls_short = cls.get('short_name', '').lower()
+            # Używamy short_name (np. "gt3") i name (np. "IMSA GT3") jako kluczy
+            # Ale bez spacji i lowercase
+            cars_ids = [c['car_id'] for c in cls.get('cars_in_class', []) if 'car_id' in c]
             
-            # Wyciągamy listę ID aut w tej klasie
-            cars_in_class = [c['car_id'] for c in cls.get('cars_in_class', []) if 'car_id' in c]
+            if 'short_name' in cls and cls['short_name']:
+                k = cls['short_name'].lower().strip()
+                class_map[k] = cars_ids
             
-            # Mapujemy zarówno pełną nazwę jak i skróconą
-            if cls_name: class_map[cls_name] = cars_in_class
-            if cls_short: class_map[cls_short] = cars_in_class
-            
-            # Czasem iRacing używa nazw typu "gt3" jako klucza, więc usuwamy spacje dla pewności
-            if cls_name: class_map[cls_name.replace(" ", "")] = cars_in_class
+            if 'name' in cls and cls['name']:
+                k = cls['name'].lower().strip().replace(" ", "")
+                class_map[k] = cars_ids
 
-    logger.info(f"📚 Zbudowano słowniki: {len(car_map)} aut, {len(class_map)} klas.")
     return car_map, class_map
 
-def resolve_cars_for_session(session, car_map, class_map):
-    """Inteligentne tłumaczenie zawartości sesji na listę konkretnych aut."""
+def resolve_cars_strict(session, car_map, class_map):
+    """
+    Logika ŚCISŁA (Strict): Żadnego zgadywania. 
+    Albo mamy ID, albo dokładną nazwę klasy.
+    """
     resolved_car_names = set()
     
-    # Pobieramy surowe dane o autach/klasach z sesji
-    # Mogą być w: car_types (napisy), cars (obiekty), car_classes (obiekty)
-    entries = session.get('car_types', []) + session.get('cars', []) + session.get('car_classes', [])
+    # Pobieramy wszystko co może być autem
+    entries = session.get('car_types', []) + session.get('cars', [])
     
+    # Jeśli lista jest pusta, sprawdźmy car_classes (rzadki przypadek)
+    if not entries:
+        entries = session.get('car_classes', [])
+
     for entry in entries:
-        # Przypadek 1: Mamy konkretne ID auta (car_id)
         c_id = None
+        type_str = None
+
+        # Rozpoznawanie typu danych
         if isinstance(entry, dict):
             c_id = entry.get('car_id') or entry.get('id')
+            type_str = entry.get('car_type') or entry.get('car_class_short_name')
         elif isinstance(entry, int):
             c_id = entry
-            
-        if c_id and c_id in car_map:
-            resolved_car_names.add(car_map[c_id])
-            continue
-
-        # Przypadek 2: Mamy nazwę klasy/typu (np. "gt3", "aussiev8")
-        type_str = ""
-        if isinstance(entry, dict):
-            type_str = entry.get('car_type') or entry.get('name') or entry.get('car_class_short_name')
         elif isinstance(entry, str):
             type_str = entry
-            
-        if type_str:
-            type_key = str(type_str).lower().strip().replace(" ", "")
-            
-            # Szukamy tej nazwy w naszej mapie klas
-            # Przeszukujemy klucze mapy, sprawdzając czy 'type_key' jest częścią nazwy klasy
-            # np. jeśli sesja ma "gt3", a my mamy klasę "imsa gt3", to może być match
-            
-            found_class_cars = []
-            
-            # Dokładne dopasowanie
-            if type_key in class_map:
-                found_class_cars = class_map[type_key]
-            else:
-                # Luźne dopasowanie (jeśli "gt3" jest w nazwie klasy)
-                for k, v in class_map.items():
-                    if type_key == k or (len(type_key) > 2 and type_key in k):
-                        found_class_cars.extend(v)
-            
-            if found_class_cars:
-                # Zamieniamy znalezione ID aut na ich nazwy
-                for cid in found_class_cars:
-                    if cid in car_map:
-                        resolved_car_names.add(car_map[cid])
-            else:
-                # Jeśli nie udało się rozpakować klasy, dajemy chociaż jej nazwę
-                resolved_car_names.add(str(type_str).title())
 
-    # Sortowanie alfabetyczne
+        # 1. Mamy konkretne ID -> Zamieniamy na nazwę
+        if c_id is not None:
+            if str(c_id) in car_map:
+                resolved_car_names.add(car_map[str(c_id)])
+            else:
+                resolved_car_names.add(f"Car #{c_id}")
+            continue
+
+        # 2. Mamy nazwę typu/klasy (np. "gt3", "ff1600")
+        if type_str:
+            clean_type = str(type_str).lower().strip().replace(" ", "")
+            
+            # Sprawdzamy czy to KLASA (np. GT3)
+            if clean_type in class_map:
+                # Rozpakowujemy klasę na auta
+                for car_id in class_map[clean_type]:
+                    if str(car_id) in car_map:
+                        resolved_car_names.add(car_map[str(car_id)])
+            else:
+                # Jeśli to nie klasa, to może to kod konkretnego auta? (np. "ff1600")
+                # Próbujemy znaleźć auto, którego nazwa zawiera ten kod (bezpieczniejsze niż zgadywanie klasy)
+                found_match = False
+                
+                # Szybkie szukanie "Reverse Search"
+                # Jeśli kod to "ff1600", a w bazie jest "Ray FF1600", to dopasuj.
+                # Ale tylko jeśli jest BARDZO podobne.
+                for cid, cname in car_map.items():
+                    if clean_type == "ff1600" and "FF1600" in cname:
+                        resolved_car_names.add(cname)
+                        found_match = True
+                        break
+                
+                if not found_match:
+                    # Jeśli nadal nie wiemy co to, wypisz surowy kod.
+                    # LEPIEJ WYPISAĆ "[Typ: xyz]" NIŻ KŁAMAĆ.
+                    resolved_car_names.add(f"[{str(type_str).capitalize()}]")
+
+    if not resolved_car_names:
+        return ["Brak danych"]
+
     return sorted(list(resolved_car_names))
 
 def send_to_discord(sessions, car_map, class_map):
@@ -174,16 +181,13 @@ def send_to_discord(sessions, car_map, class_map):
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
         host = s.get('host', {}).get('display_name', 'Anonim')
         
-        # --- ROZWIĄZYWANIE NAZW AUT ---
-        car_names_list = resolve_cars_for_session(s, car_map, class_map)
+        # Używamy nowej, ścisłej logiki
+        car_names_list = resolve_cars_strict(s, car_map, class_map)
         
         cars_str = ", ".join(car_names_list)
         
-        # Limity Discorda (pole value max 1024 znaki)
-        if len(cars_str) > 900: 
-            cars_str = cars_str[:897] + "..."
-        if not cars_str: 
-            cars_str = "Brak danych / Wszystkie auta"
+        if len(cars_str) > 1000: 
+            cars_str = cars_str[:997] + "..."
 
         embed = {
             "title": f"🏎️ Sesja: {name}",
@@ -205,8 +209,6 @@ def send_to_discord(sessions, car_map, class_map):
 
 def main():
     token = get_access_token()
-    
-    # Pobieramy oba słowniki (Auta i Klasy)
     car_map, class_map = get_dictionaries(token)
     
     data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
