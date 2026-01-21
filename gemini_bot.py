@@ -127,19 +127,23 @@ def resolve_cars_clean(session, car_map, class_map):
     return sorted(list(concrete_cars))
 
 def get_session_type(session):
-    """
-    Rozszerzona mapa typów sesji.
-    Analizuje listę 'session_types' zwracaną przez API.
-    """
     st_list = session.get('session_types', [])
     types_found = []
     
-    # Mapa ID -> Nazwa (na podstawie dokumentacji iRacing)
-    # 3: Practice, 4: Qualify, 5: Race (częste w oficjalnych)
-    # Hosted sessions używają czasem innych ID.
+    # Mapa ID -> Nazwa
+    type_map = {
+        0: "Trening", 
+        1: "Kwalifikacje",
+        2: "Kwalifikacje", # Czasem lone qualify
+        3: "Trening", # Lone Practice
+        4: "Kwalifikacje", # Open Qualify
+        5: "Wyścig",
+        6: "Wyścig",
+        9: "Rozgrzewka",
+        10: "Kwalifikacje"
+    }
     
     for item in st_list:
-        # Może być słownikiem {'session_type': 3} lub intem
         sid = -1
         if isinstance(item, dict):
             sid = item.get('session_type')
@@ -147,23 +151,14 @@ def get_session_type(session):
             sid = item
             
         if sid is not None:
-            # Tłumaczenie kodów
-            if sid == 3: types_found.append("Trening")     # Lone Practice
-            elif sid == 4: types_found.append("Kwalifikacje") # Open Qualify
-            elif sid == 5: types_found.append("Wyścig")
-            elif sid == 6: types_found.append("Wyścig")    # Heat Racing
-            elif sid == 9: types_found.append("Rozgrzewka")
-            elif sid == 10: types_found.append("Kwalifikacje")
-            # Fallback dla nieznanych ID, ale powszechnych
-            elif sid == 0: types_found.append("Trening") 
-            elif sid == 1: types_found.append("Trening")
-            elif sid == 2: types_found.append("Kwalifikacje")
+            name = type_map.get(sid, "Sesja")
+            if name not in types_found:
+                types_found.append(name)
             
-    # Usuwanie duplikatów z zachowaniem kolejności
+    # Unikalne, zachowując kolejność
     seen = set()
-    unique_types = [x for x in types_found if not (x in seen or seen.add(x))]
-    
-    return ", ".join(unique_types) if unique_types else "Trening"
+    unique = [x for x in types_found if not (x in seen or seen.add(x))]
+    return ", ".join(unique) if unique else "Trening"
 
 def calculate_remaining_time(session):
     try:
@@ -184,7 +179,15 @@ def calculate_remaining_time(session):
         if remaining < 0:
             return "W trakcie / Końcówka"
         
-        return f"{int(remaining)} min"
+        # --- NOWY FORMAT CZASU (1h 25m) ---
+        hours = int(remaining // 60)
+        mins = int(remaining % 60)
+        
+        if hours > 0:
+            return f"{hours}h {mins}m"
+        else:
+            return f"{mins}m"
+        
     except Exception:
         return "N/A"
 
@@ -196,9 +199,14 @@ def send_to_discord(sessions, car_map, class_map):
     for i, s in enumerate(sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
         
-        # --- NAPRAWA LINII 192 (track) ---
+        # Celowany Debug dla konkretnej sesji
+        if "Adelaide" in name:
+            logger.info(f"🔍🔍🔍 DEBUG DLA SESJI: {name}")
+            logger.info("Zrzucam pełną strukturę JSON, żeby znaleźć kierowców:")
+            logger.info(json.dumps(s, indent=2))
+            logger.info("🔍🔍🔍 KONIEC ZRZUTU")
+
         track_data = s.get('track', {})
-        # Czasem track to string (ID), a czasem obiekt
         if isinstance(track_data, dict):
             track = track_data.get('track_name', 'Nieznany tor')
         else:
@@ -207,28 +215,13 @@ def send_to_discord(sessions, car_map, class_map):
         host_data = s.get('host', {})
         host = host_data.get('display_name', 'Anonim') if isinstance(host_data, dict) else "Anonim"
         
-        # Logika
         session_type = get_session_type(s)
         time_left = calculate_remaining_time(s)
         
-        # --- DIAGNOSTYKA MIEJSC ---
-        # Sprawdzamy surowe dane w logach
         max_d = s.get('max_drivers', 0)
         reg_d = s.get('num_registered', 0)
-        
-        # Logujemy surowy JSON dla pierwszej sesji, żeby znaleźć właściwe pole
-        if i == 1:
-            logger.info("🔍 DEBUG SESJI #1 (Sprawdź te pola):")
-            logger.info(f"   max_drivers: {max_d}")
-            logger.info(f"   num_registered: {reg_d}")
-            logger.info(f"   session_types: {s.get('session_types')}")
-            # Czasem jest pole 'counts'
-            if 'counts' in s:
-                logger.info(f"   counts: {s.get('counts')}")
-
         slots_info = f"{reg_d} / {max_d}"
 
-        # Auta
         car_names_list = resolve_cars_clean(s, car_map, class_map)
         cars_str = ", ".join(car_names_list)
         if len(cars_str) > 900: cars_str = cars_str[:897] + "..."
