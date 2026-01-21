@@ -5,6 +5,7 @@ import hashlib
 import base64
 import logging
 import json
+import time
 from datetime import datetime, timezone
 
 # Konfiguracja logowania
@@ -18,12 +19,10 @@ EMAIL = os.environ.get("IR_EMAIL", "").strip()
 PASSWORD = os.environ.get("IR_PASSWORD", "").strip()
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
-# --- NOWE ZMIENNE FILTRUJĄCE ---
-# Pobieramy string i dzielimy go po przecinkach na listę, usuwając puste spacje
-FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "bull,silver")
+# --- ZMIENNE FILTRUJĄCE ---
+FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "bull, silver")
 FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee,porsche")
 
-# Tworzymy listy filtrów (tylko jeśli coś wpisano)
 FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
 FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
 
@@ -119,27 +118,17 @@ def calculate_remaining_time(session):
         return "N/A"
 
 def check_filters(session):
-    """
-    Sprawdza, czy sesja pasuje do filtrów użytkownika (Tory i Auta).
-    Jeśli filtry są puste -> sesja przechodzi (zwraca True).
-    """
-    
     # 1. FILTR TORÓW
     if FILTER_TRACKS:
         track_name = session.get('track', {}).get('track_name', '').lower()
-        # Sprawdzamy czy którakolwiek z fraz z filtra znajduje się w nazwie toru
-        # np. czy "spa" znajduje się w "circuit de spa-francorchamps"
         match_track = any(f in track_name for f in FILTER_TRACKS)
         if not match_track:
-            return False # Tor nie pasuje, odrzucamy
+            return False
 
     # 2. FILTR AUT
     if FILTER_CARS:
         session_cars = session.get('cars', [])
-        # Tworzymy listę nazw aut w tej sesji (lowercase)
         session_car_names = [c.get('car_name', '').lower() for c in session_cars]
-        
-        # Sprawdzamy, czy w tej sesji jest PRZYNAJMNIEJ JEDNO auto, które nas interesuje
         match_car = False
         for s_car in session_car_names:
             for f_car in FILTER_CARS:
@@ -149,7 +138,7 @@ def check_filters(session):
             if match_car: break
         
         if not match_car:
-            return False # Żadne auto nie pasuje, odrzucamy
+            return False
 
     return True
 
@@ -166,7 +155,7 @@ def is_session_valid(s):
             if now > reg_dt: return False
         except ValueError: pass
 
-    # 3. FILTRY UŻYTKOWNIKA (Tory i Auta)
+    # 3. FILTRY UŻYTKOWNIKA
     if not check_filters(s): return False
 
     return True
@@ -177,14 +166,17 @@ def send_to_discord(sessions):
     # Filtrowanie sesji
     valid_sessions = [s for s in sessions if is_session_valid(s)]
     
-    logger.info(f"🧐 Filtrowanie: Pobranno {len(sessions)}. Po filtrach (Hasło/Closed/UserPrefs) zostało: {len(valid_sessions)}.")
+    logger.info(f"🧐 Filtrowanie: Pobranno {len(sessions)}. Pasuje: {len(valid_sessions)} sesji.")
     
     if not valid_sessions:
-        logger.info("ℹ️ Brak sesji spełniających Twoje kryteria.")
+        logger.info("ℹ️ Brak sesji spełniających kryteria.")
         return
 
-    embeds = []
-    for i, s in enumerate(valid_sessions[:5], 1):
+    # Budowanie listy wszystkich embedów
+    all_embeds = []
+    
+    # Iterujemy przez WSZYSTKIE pasujące sesje (bez limitu [:5])
+    for i, s in enumerate(valid_sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
         host = s.get('host', {}).get('display_name', 'Anonim')
@@ -216,23 +208,39 @@ def send_to_discord(sessions):
             ],
             "footer": {"text": f"ID Sesji: {s.get('session_id', 'N/A')}"}
         }
-        embeds.append(embed)
+        all_embeds.append(embed)
 
-    try:
-        requests.post(WEBHOOK_URL, json={"embeds": embeds})
-        logger.info("✅ Powiadomienie wysłane!")
-    except Exception as e:
-        logger.error(f"❌ Błąd Discorda: {e}")
+    # --- MECHANIZM PACZKOWANIA (Batching) ---
+    # Discord przyjmuje max 10 embedów na raz.
+    # Dzielimy listę 'all_embeds' na kawałki po 10 elementów.
+    
+    batch_size = 10
+    total_sent = 0
+    
+    for i in range(0, len(all_embeds), batch_size):
+        batch = all_embeds[i : i + batch_size]
+        
+        try:
+            logger.info(f"📨 Wysyłanie paczki {i//batch_size + 1} ({len(batch)} sesji)...")
+            requests.post(WEBHOOK_URL, json={"embeds": batch})
+            total_sent += len(batch)
+            
+            # Ważne: Mała pauza, żeby Discord nie zablokował webhooka za spam
+            time.sleep(1) 
+            
+        except Exception as e:
+            logger.error(f"❌ Błąd Discorda przy paczce {i}: {e}")
+
+    logger.info(f"✅ Zakończono wysyłanie. Wysłano łącznie: {total_sent} sesji.")
 
 def main():
     token = get_access_token()
     
-    # Wyświetlamy aktywne filtry w logach
     if FILTER_TRACKS: logger.info(f"🔍 Filtr Torów AKTYWNY: {FILTER_TRACKS}")
-    else: logger.info("🔍 Filtr Torów: WYŁĄCZONY (Wszystkie tory)")
+    else: logger.info("🔍 Filtr Torów: WYŁĄCZONY")
     
     if FILTER_CARS: logger.info(f"🔍 Filtr Aut AKTYWNY: {FILTER_CARS}")
-    else: logger.info("🔍 Filtr Aut: WYŁĄCZONY (Wszystkie auta)")
+    else: logger.info("🔍 Filtr Aut: WYŁĄCZONY")
 
     data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
     if not data: sys.exit(1)
