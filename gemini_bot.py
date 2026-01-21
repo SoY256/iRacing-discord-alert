@@ -5,7 +5,6 @@ import hashlib
 import base64
 import logging
 import json
-import time
 from datetime import datetime, timezone
 
 # Konfiguracja logowania
@@ -21,7 +20,7 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
 # --- ZMIENNE FILTRUJĄCE ---
 FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "")
-FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee, porsche 9")
+FILTER_CARS_STR = os.environ.get("FILTER_CARS", "")
 
 FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
 FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
@@ -29,6 +28,29 @@ FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip(
 # Stałe URL
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
+HISTORY_FILE = "seen_sessions.json"
+
+def load_seen_sessions():
+    """Wczytuje listę ID sesji, które już zostały wysłane."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r') as f:
+                return set(json.load(f))
+        except Exception as e:
+            logger.warning(f"⚠️ Nie udało się wczytać historii: {e}. Tworzę nową.")
+    return set()
+
+def save_seen_sessions(seen_ids):
+    """Zapisuje listę ID sesji do pliku."""
+    try:
+        # Konwertujemy na listę i zapisujemy
+        # Ograniczamy historię do np. ostatnich 2000 wpisów, żeby plik nie rósł w nieskończoność
+        limited_list = list(seen_ids)[-2000:] 
+        with open(HISTORY_FILE, 'w') as f:
+            json.dump(limited_list, f)
+        logger.info(f"💾 Zapisano historię ({len(limited_list)} sesji).")
+    except Exception as e:
+        logger.error(f"❌ Błąd zapisu historii: {e}")
 
 def generate_hash(secret, salt):
     if not secret or not salt: return ""
@@ -38,7 +60,7 @@ def generate_hash(secret, salt):
     return base64.b64encode(digest).decode('utf-8')
 
 def get_access_token():
-    logger.info("🔐 Logowanie...")
+    # logger.info("🔐 Logowanie...") # Mniej spamu w logach co 5 min
     hashed_password = generate_hash(PASSWORD, EMAIL)
     hashed_client_secret = generate_hash(CLIENT_SECRET, CLIENT_ID)
 
@@ -57,12 +79,10 @@ def get_access_token():
         return response.json().get("access_token")
     except Exception as e:
         logger.error(f"❌ Błąd logowania: {e}")
-        if 'response' in locals(): logger.error(response.text)
         sys.exit(1)
 
-def get_data_from_link(url, token, desc="dane"):
+def get_data_from_link(url, token):
     headers = {"Authorization": f"Bearer {token}"}
-    logger.info(f"➡️ Pobieranie: {desc}...")
     try:
         resp = requests.get(url, headers=headers)
         resp.raise_for_status()
@@ -74,7 +94,7 @@ def get_data_from_link(url, token, desc="dane"):
             return s3_resp.json()
         return data
     except Exception as e:
-        logger.error(f"❌ Błąd pobierania {desc}: {e}")
+        logger.error(f"❌ Błąd pobierania danych: {e}")
         return None
 
 def get_session_type_name(session):
@@ -109,7 +129,6 @@ def calculate_remaining_time(session):
         remaining = total_minutes - elapsed
         
         if remaining < 0: return "W trakcie / Końcówka"
-        
         hours = int(remaining // 60)
         mins = int(remaining % 60)
         if hours > 0: return f"{hours}h {mins}m"
@@ -121,9 +140,7 @@ def check_filters(session):
     # 1. FILTR TORÓW
     if FILTER_TRACKS:
         track_name = session.get('track', {}).get('track_name', '').lower()
-        match_track = any(f in track_name for f in FILTER_TRACKS)
-        if not match_track:
-            return False
+        if not any(f in track_name for f in FILTER_TRACKS): return False
 
     # 2. FILTR AUT
     if FILTER_CARS:
@@ -136,17 +153,14 @@ def check_filters(session):
                     match_car = True
                     break
             if match_car: break
-        
-        if not match_car:
-            return False
+        if not match_car: return False
 
     return True
 
 def is_session_valid(s):
-    # 1. Hasło
     if s.get('password_protected') is True: return False
-
-    # 2. Status rejestracji ("Closed")
+    
+    # Check Closed
     reg_expires_str = s.get('open_reg_expires')
     if reg_expires_str:
         try:
@@ -155,28 +169,32 @@ def is_session_valid(s):
             if now > reg_dt: return False
         except ValueError: pass
 
-    # 3. FILTRY UŻYTKOWNIKA
     if not check_filters(s): return False
-
     return True
 
-def send_to_discord(sessions):
-    if not WEBHOOK_URL: return
+def send_to_discord(sessions, seen_ids):
+    if not WEBHOOK_URL: return set()
     
-    # Filtrowanie sesji
+    # 1. Filtrujemy poprawność (hasło, tory, auta)
     valid_sessions = [s for s in sessions if is_session_valid(s)]
     
-    logger.info(f"🧐 Filtrowanie: Pobranno {len(sessions)}. Pasuje: {len(valid_sessions)} sesji.")
+    # 2. Filtrujemy DUPLIKATY (tylko te, których ID nie ma w seen_ids)
+    new_sessions = []
+    for s in valid_sessions:
+        sid = s.get('session_id')
+        if sid and sid not in seen_ids:
+            new_sessions.append(s)
     
-    if not valid_sessions:
-        logger.info("ℹ️ Brak sesji spełniających kryteria.")
-        return
+    logger.info(f"🧐 Statystyki: Pobranych {len(sessions)} -> Ważnych {len(valid_sessions)} -> NOWYCH {len(new_sessions)}.")
+    
+    if not new_sessions:
+        logger.info("💤 Brak nowych sesji do wysłania.")
+        return set() # Nic nowego nie doszło
 
-    # Budowanie listy wszystkich embedów
     all_embeds = []
-    
-    # Iterujemy przez WSZYSTKIE pasujące sesje (bez limitu [:5])
-    for i, s in enumerate(valid_sessions, 1):
+    ids_to_add = set()
+
+    for i, s in enumerate(new_sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
         host = s.get('host', {}).get('display_name', 'Anonim')
@@ -209,47 +227,48 @@ def send_to_discord(sessions):
             "footer": {"text": f"ID Sesji: {s.get('session_id', 'N/A')}"}
         }
         all_embeds.append(embed)
+        
+        # Dodajemy ID do zbioru "widzianych", żeby zapisać po wysłaniu
+        if s.get('session_id'):
+            ids_to_add.add(s.get('session_id'))
 
-    # --- MECHANIZM PACZKOWANIA (Batching) ---
-    # Discord przyjmuje max 10 embedów na raz.
-    # Dzielimy listę 'all_embeds' na kawałki po 10 elementów.
-    
+    # Batch sending
     batch_size = 10
     total_sent = 0
     
     for i in range(0, len(all_embeds), batch_size):
         batch = all_embeds[i : i + batch_size]
-        
         try:
-            logger.info(f"📨 Wysyłanie paczki {i//batch_size + 1} ({len(batch)} sesji)...")
             requests.post(WEBHOOK_URL, json={"embeds": batch})
             total_sent += len(batch)
-            
-            # Ważne: Mała pauza, żeby Discord nie zablokował webhooka za spam
-            time.sleep(1) 
-            
+            time.sleep(1)
         except Exception as e:
-            logger.error(f"❌ Błąd Discorda przy paczce {i}: {e}")
+            logger.error(f"❌ Błąd Discorda: {e}")
 
-    logger.info(f"✅ Zakończono wysyłanie. Wysłano łącznie: {total_sent} sesji.")
+    logger.info(f"✅ Wysłano {total_sent} nowych powiadomień.")
+    return ids_to_add
 
 def main():
     token = get_access_token()
     
-    if FILTER_TRACKS: logger.info(f"🔍 Filtr Torów AKTYWNY: {FILTER_TRACKS}")
-    else: logger.info("🔍 Filtr Torów: WYŁĄCZONY")
-    
-    if FILTER_CARS: logger.info(f"🔍 Filtr Aut AKTYWNY: {FILTER_CARS}")
-    else: logger.info("🔍 Filtr Aut: WYŁĄCZONY")
+    # 1. Wczytaj historię
+    seen_ids = load_seen_sessions()
+    logger.info(f"📂 Wczytano historię: {len(seen_ids)} znanych sesji.")
 
-    data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
+    data = get_data_from_link(SESSIONS_URL, token)
     if not data: sys.exit(1)
 
     sessions = data.get('sessions', [])
-    if sessions:
-        send_to_discord(sessions)
+    
+    # 2. Wyślij tylko nowe
+    newly_sent_ids = send_to_discord(sessions, seen_ids)
+    
+    # 3. Zaktualizuj historię jeśli coś wysłaliśmy
+    if newly_sent_ids:
+        updated_seen_ids = seen_ids.union(newly_sent_ids)
+        save_seen_sessions(updated_seen_ids)
     else:
-        logger.info("ℹ️ Pusta lista sesji.")
+        logger.info("📂 Historia bez zmian.")
 
 if __name__ == "__main__":
     main()
