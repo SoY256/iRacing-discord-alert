@@ -5,6 +5,7 @@ import hashlib
 import base64
 import logging
 import json
+from datetime import datetime, timezone
 
 # Konfiguracja logowania
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
@@ -71,56 +72,38 @@ def get_data_from_link(url, token, desc="dane"):
         return None
 
 def get_dictionaries(token):
-    """Buduje mapy aut i klas."""
     # 1. Auta
     raw_cars = get_data_from_link(CARS_ASSETS_URL, token, "Słownik Aut")
-    car_map = {} # ID -> Nazwa
-    
+    car_map = {}
     if raw_cars:
         for c in raw_cars:
             if 'car_id' in c and 'car_name' in c:
-                car_map[c['car_id']] = c['car_name']
-                car_map[str(c['car_id'])] = c['car_name'] # String version
+                car_map[str(c['car_id'])] = c['car_name']
     
-    # 2. Klasy (Tylko ścisłe dopasowanie!)
+    # 2. Klasy
     raw_classes = get_data_from_link(CLASSES_ASSETS_URL, token, "Słownik Klas")
-    class_map = {} 
-    
+    class_map = {}
     if raw_classes:
         for cls in raw_classes:
-            # Używamy short_name (np. "gt3") i name (np. "IMSA GT3") jako kluczy
-            # Ale bez spacji i lowercase
             cars_ids = [c['car_id'] for c in cls.get('cars_in_class', []) if 'car_id' in c]
-            
             if 'short_name' in cls and cls['short_name']:
-                k = cls['short_name'].lower().strip()
-                class_map[k] = cars_ids
-            
+                class_map[cls['short_name'].lower().strip()] = cars_ids
             if 'name' in cls and cls['name']:
-                k = cls['name'].lower().strip().replace(" ", "")
-                class_map[k] = cars_ids
+                class_map[cls['name'].lower().strip().replace(" ", "")] = cars_ids
 
     return car_map, class_map
 
-def resolve_cars_strict(session, car_map, class_map):
-    """
-    Logika ŚCISŁA (Strict): Żadnego zgadywania. 
-    Albo mamy ID, albo dokładną nazwę klasy.
-    """
-    resolved_car_names = set()
+def resolve_cars_clean(session, car_map, class_map):
+    """Zwraca tylko konkretne auta, bez generycznych grup."""
+    concrete_cars = set()
     
-    # Pobieramy wszystko co może być autem
     entries = session.get('car_types', []) + session.get('cars', [])
-    
-    # Jeśli lista jest pusta, sprawdźmy car_classes (rzadki przypadek)
-    if not entries:
-        entries = session.get('car_classes', [])
+    if not entries: entries = session.get('car_classes', [])
 
     for entry in entries:
         c_id = None
         type_str = None
 
-        # Rozpoznawanie typu danych
         if isinstance(entry, dict):
             c_id = entry.get('car_id') or entry.get('id')
             type_str = entry.get('car_type') or entry.get('car_class_short_name')
@@ -129,47 +112,75 @@ def resolve_cars_strict(session, car_map, class_map):
         elif isinstance(entry, str):
             type_str = entry
 
-        # 1. Mamy konkretne ID -> Zamieniamy na nazwę
-        if c_id is not None:
-            if str(c_id) in car_map:
-                resolved_car_names.add(car_map[str(c_id)])
-            else:
-                resolved_car_names.add(f"Car #{c_id}")
+        # 1. Konkretne ID
+        if c_id is not None and str(c_id) in car_map:
+            concrete_cars.add(car_map[str(c_id)])
             continue
 
-        # 2. Mamy nazwę typu/klasy (np. "gt3", "ff1600")
+        # 2. Klasa (rozpakowujemy na auta)
         if type_str:
             clean_type = str(type_str).lower().strip().replace(" ", "")
-            
-            # Sprawdzamy czy to KLASA (np. GT3)
             if clean_type in class_map:
-                # Rozpakowujemy klasę na auta
                 for car_id in class_map[clean_type]:
                     if str(car_id) in car_map:
-                        resolved_car_names.add(car_map[str(car_id)])
-            else:
-                # Jeśli to nie klasa, to może to kod konkretnego auta? (np. "ff1600")
-                # Próbujemy znaleźć auto, którego nazwa zawiera ten kod (bezpieczniejsze niż zgadywanie klasy)
-                found_match = False
-                
-                # Szybkie szukanie "Reverse Search"
-                # Jeśli kod to "ff1600", a w bazie jest "Ray FF1600", to dopasuj.
-                # Ale tylko jeśli jest BARDZO podobne.
-                for cid, cname in car_map.items():
-                    if clean_type == "ff1600" and "FF1600" in cname:
-                        resolved_car_names.add(cname)
-                        found_match = True
-                        break
-                
-                if not found_match:
-                    # Jeśli nadal nie wiemy co to, wypisz surowy kod.
-                    # LEPIEJ WYPISAĆ "[Typ: xyz]" NIŻ KŁAMAĆ.
-                    resolved_car_names.add(f"[{str(type_str).capitalize()}]")
+                        concrete_cars.add(car_map[str(car_id)])
 
-    if not resolved_car_names:
-        return ["Brak danych"]
+    # Filtrowanie "Anty-Śmieciowe":
+    # iRacing czasem zwraca "Sportscar", "Road", "Audi" jako nazwy klas,
+    # które nie są mapowane na konkretne auta w słowniku klas.
+    # Jeśli mamy już konkretne auta, ignorujemy resztę.
+    
+    if not concrete_cars:
+        return ["Nieznane (Brak danych)"]
 
-    return sorted(list(resolved_car_names))
+    return sorted(list(concrete_cars))
+
+def get_session_type(session):
+    # Proste tłumaczenie typu sesji
+    # practice, qualify, race
+    st = session.get('session_types', [])
+    types_pl = []
+    
+    for t in st:
+        t_type = t.get('session_type', '').lower()
+        if 'practice' in t_type: types_pl.append("Trening")
+        elif 'qualif' in t_type: types_pl.append("Kwalifikacje")
+        elif 'race' in t_type: types_pl.append("Wyścig")
+        elif 'warm' in t_type: types_pl.append("Rozgrzewka")
+        
+    return ", ".join(types_pl) if types_pl else "Trening"
+
+def calculate_remaining_time(session):
+    # iRacing podaje czas w minutach w polach np. 'practice_length', 'race_laps' etc.
+    # Ale najłatwiej obliczyć to na podstawie launch_at + duration
+    try:
+        # launch_at wygląda tak: "2024-05-20T10:00:00Z"
+        launch_str = session.get('launch_at')
+        if not launch_str: return "Nieznany"
+        
+        # Konwersja czasu
+        launch_dt = datetime.fromisoformat(launch_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        
+        # Całkowity czas trwania (suma minut)
+        total_minutes = 0
+        total_minutes += session.get('practice_length', 0)
+        total_minutes += session.get('qualify_length', 0)
+        # Wyścig może być na okrążenia, wtedy czas jest trudny do estymacji, 
+        # ale jeśli jest na czas (race_length), to dodajemy.
+        total_minutes += session.get('race_length', 0) 
+        
+        # Ile minęło od startu
+        elapsed = (now - launch_dt).total_seconds() / 60
+        remaining = total_minutes - elapsed
+        
+        if remaining < 0:
+            return "Zakończona / Ostatnie okrążenia"
+        
+        return f"{int(remaining)} min"
+        
+    except Exception:
+        return "N/A"
 
 def send_to_discord(sessions, car_map, class_map):
     if not WEBHOOK_URL: return
@@ -178,50 +189,4 @@ def send_to_discord(sessions, car_map, class_map):
     embeds = []
     for i, s in enumerate(sessions, 1):
         name = s.get('session_name', 'Bez nazwy')
-        track = s.get('track', {}).get('track_name', 'Nieznany tor')
-        host = s.get('host', {}).get('display_name', 'Anonim')
-        
-        # Używamy nowej, ścisłej logiki
-        car_names_list = resolve_cars_strict(s, car_map, class_map)
-        
-        cars_str = ", ".join(car_names_list)
-        
-        if len(cars_str) > 1000: 
-            cars_str = cars_str[:997] + "..."
-
-        embed = {
-            "title": f"🏎️ Sesja: {name}",
-            "color": 3066993,
-            "fields": [
-                {"name": "📍 Tor", "value": track, "inline": True},
-                {"name": "👤 Host", "value": host, "inline": True},
-                {"name": "🚗 Auta", "value": cars_str, "inline": False}
-            ],
-            "footer": {"text": f"ID: {s.get('session_id', 'N/A')}"}
-        }
-        embeds.append(embed)
-
-    try:
-        requests.post(WEBHOOK_URL, json={"embeds": embeds})
-        logger.info("✅ Powiadomienie wysłane!")
-    except Exception as e:
-        logger.error(f"❌ Błąd Discorda: {e}")
-
-def main():
-    token = get_access_token()
-    car_map, class_map = get_dictionaries(token)
-    
-    data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
-    if not data: sys.exit(1)
-
-    sessions = data.get('sessions', [])
-    logger.info(f"📊 Znaleziono łącznie {len(sessions)} sesji.")
-    
-    top_5 = sessions[:5]
-    if top_5:
-        send_to_discord(top_5, car_map, class_map)
-    else:
-        logger.info("ℹ️ Brak sesji.")
-
-if __name__ == "__main__":
-    main()
+        track =
