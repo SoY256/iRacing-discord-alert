@@ -2,27 +2,26 @@ name: Gemini - iRacing Bot
 
 # Tylko ręczne uruchamianie przyciskiem
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Tylko ręczne uruchamianie przyciskiem
 
 jobs:
-  test-run:
+  run-bot:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Pobierz repozytorium
+    - name: Pobranie kodu
       uses: actions/checkout@v3
 
-    - name: Zainstaluj Python 3.10
+    - name: Konfiguracja Pythona
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
 
-    - name: Zainstaluj biblioteki
+    - name: Instalacja bibliotek
       run: pip install requests
 
-    - name: Uruchom skrypt testowy
+    - name: Uruchomienie Bota
       env:
-        # Przekazujemy sekrety do skryptu
         IR_CLIENT_ID: ${{ secrets.IR_CLIENT_ID }}
         IR_CLIENT_SECRET: ${{ secrets.IR_CLIENT_SECRET }}
         IR_EMAIL: ${{ secrets.IR_EMAIL }}
