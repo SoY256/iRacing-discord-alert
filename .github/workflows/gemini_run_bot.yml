@@ -1,8 +1,8 @@
 name: iRacing Bot 5min
 
 on:
-  # schedule:
-   # - cron: '*/5 * * * *' # Co 5 minut
+   schedule:
+    - cron: '*/5 * * * *' # Co 5 minut
   workflow_dispatch: # Przycisk do ręcznego uruchomienia
 
 # Bez tego sekcja 'Read and write permissions' w ustawieniach nic nie da
