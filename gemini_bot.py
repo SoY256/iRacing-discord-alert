@@ -22,7 +22,6 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 # --- ZMIENNE FILTRUJĄCE ---
 FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "")
 FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee")
-
 FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
 FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
 
@@ -32,37 +31,33 @@ SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
 HISTORY_FILE = "seen_sessions.json"
 
 def ensure_history_file_exists():
-    """Upewnia się, że plik historii istnieje. Jeśli nie - tworzy pusty."""
+    """Upewnia się, że plik historii istnieje."""
     if not os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'w') as f:
                 json.dump([], f)
-            logger.info(f"🆕 Utworzono nowy, pusty plik historii: {HISTORY_FILE}")
-            return True
+            logger.info(f"🆕 Utworzono nowy plik historii: {HISTORY_FILE}")
         except Exception as e:
             logger.error(f"❌ Nie udało się utworzyć pliku historii: {e}")
-    return False
 
 def load_seen_sessions():
-    """Wczytuje listę ID sesji."""
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, 'r') as f:
-                return set(json.load(f))
+                data = json.load(f)
+                return set(data)
         except Exception as e:
-            logger.warning(f"⚠️ Błąd odczytu historii: {e}")
+            logger.warning(f"⚠️ Błąd odczytu: {e}")
     return set()
 
 def save_seen_sessions(seen_ids):
-    """Zapisuje listę ID sesji do pliku."""
     try:
-        # Sortujemy dla porządku w pliku
         limited_list = sorted(list(seen_ids))[-2000:] 
         with open(HISTORY_FILE, 'w') as f:
-            json.dump(limited_list, f, indent=2) # indent dla czytelności
-        logger.info(f"💾 Zaktualizowano plik historii ({len(limited_list)} sesji).")
+            json.dump(limited_list, f, indent=2)
+        logger.info(f"💾 Zapisano historię ({len(limited_list)} sesji).")
     except Exception as e:
-        logger.error(f"❌ Błąd zapisu historii: {e}")
+        logger.error(f"❌ Błąd zapisu: {e}")
 
 def generate_hash(secret, salt):
     if not secret or not salt: return ""
@@ -74,7 +69,6 @@ def generate_hash(secret, salt):
 def get_access_token():
     hashed_password = generate_hash(PASSWORD, EMAIL)
     hashed_client_secret = generate_hash(CLIENT_SECRET, CLIENT_ID)
-
     payload = {
         "grant_type": "password_limited",
         "username": EMAIL,
@@ -83,7 +77,6 @@ def get_access_token():
         "client_id": CLIENT_ID,
         "client_secret": hashed_client_secret
     }
-
     try:
         response = requests.post(TOKEN_URL, data=payload)
         response.raise_for_status()
@@ -98,7 +91,6 @@ def get_data_from_link(url, token, desc="dane"):
         resp = requests.get(url, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-
         if isinstance(data, dict) and 'link' in data:
             s3_resp = requests.get(data['link'])
             s3_resp.raise_for_status()
@@ -116,14 +108,12 @@ def get_session_type_name(session):
         if et == 4: return "Time Trial"
         if et == 3: return "Kwalifikacje"
         if et == 2: return "Trening"
-
     s_types = session.get('session_types', [])
     for s in s_types:
         st = s.get('session_type')
         if st in [5, 6]: return "Wyścig"
         if st in [4, 10]: return "Kwalifikacje"
         if st == 9: return "Rozgrzewka"
-    
     return "Trening"
 
 def calculate_remaining_time(session):
@@ -138,20 +128,17 @@ def calculate_remaining_time(session):
         total_minutes += session.get('race_length', 0) 
         elapsed = (now - launch_dt).total_seconds() / 60
         remaining = total_minutes - elapsed
-        
         if remaining < 0: return "W trakcie / Końcówka"
         hours = int(remaining // 60)
         mins = int(remaining % 60)
         if hours > 0: return f"{hours}h {mins}m"
         else: return f"{mins}m"
-    except Exception:
-        return "N/A"
+    except Exception: return "N/A"
 
 def check_filters(session):
     if FILTER_TRACKS:
         track_name = session.get('track', {}).get('track_name', '').lower()
         if not any(f in track_name for f in FILTER_TRACKS): return False
-
     if FILTER_CARS:
         session_cars = session.get('cars', [])
         session_car_names = [c.get('car_name', '').lower() for c in session_cars]
@@ -167,7 +154,6 @@ def check_filters(session):
 
 def is_session_valid(s):
     if s.get('password_protected') is True: return False
-    
     reg_expires_str = s.get('open_reg_expires')
     if reg_expires_str:
         try:
@@ -175,7 +161,6 @@ def is_session_valid(s):
             now = datetime.now(timezone.utc)
             if now > reg_dt: return False
         except ValueError: pass
-
     if not check_filters(s): return False
     return True
 
@@ -190,7 +175,7 @@ def send_to_discord(sessions, seen_ids):
         if sid and sid not in seen_ids:
             new_sessions.append(s)
     
-    logger.info(f"🧐 Statystyki: Pobranych {len(sessions)} -> Ważnych {len(valid_sessions)} -> NOWYCH {len(new_sessions)}.")
+    logger.info(f"🧐 Statystyki: Wszystkie={len(sessions)} | Pasujące={len(valid_sessions)} | NOWE={len(new_sessions)}")
     
     if not new_sessions:
         return set()
@@ -204,16 +189,13 @@ def send_to_discord(sessions, seen_ids):
         host = s.get('host', {}).get('display_name', 'Anonim')
         session_type = get_session_type_name(s)
         time_left = calculate_remaining_time(s)
-        
         max_d = s.get('max_drivers', 0)
         curr_d = s.get('num_drivers', 0)
         slots_info = f"{curr_d} / {max_d}"
-
         cars_list = s.get('cars', [])
         car_names = [c.get('car_name', 'Unknown Car') for c in cars_list]
         unique_cars = sorted(list(set(car_names)))
         cars_str = ", ".join(unique_cars)
-        
         if len(cars_str) > 900: cars_str = cars_str[:897] + "..."
         if not cars_str: cars_str = "Brak danych"
 
@@ -231,7 +213,6 @@ def send_to_discord(sessions, seen_ids):
             "footer": {"text": f"ID Sesji: {s.get('session_id', 'N/A')}"}
         }
         all_embeds.append(embed)
-        
         if s.get('session_id'):
             ids_to_add.add(s.get('session_id'))
 
@@ -250,7 +231,6 @@ def send_to_discord(sessions, seen_ids):
     return ids_to_add
 
 def main():
-    # 1. GWARANTUJEMY istnienie pliku
     ensure_history_file_exists()
 
     token = get_access_token()
@@ -263,13 +243,12 @@ def main():
     sessions = data.get('sessions', [])
     newly_sent_ids = send_to_discord(sessions, seen_ids)
     
-    # 2. ZAPISUJEMY ZAWSZE (nawet jeśli nic nowego, żeby 'touch' plik dla Gita)
-    # Jeśli nie było nowych, zapisujemy stare, żeby Git widział plik.
+    # AKTUALIZACJA I ZAPIS (ZAWSZE!)
     if newly_sent_ids:
         updated_seen_ids = seen_ids.union(newly_sent_ids)
         save_seen_sessions(updated_seen_ids)
     else:
-        logger.info("💤 Brak nowych sesji. Odświeżam plik historii (dla Gita).")
+        logger.info("💤 Brak nowych sesji. Odświeżam timestamp pliku (dla Gita).")
         save_seen_sessions(seen_ids)
 
 if __name__ == "__main__":
