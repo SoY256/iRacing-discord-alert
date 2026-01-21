@@ -1,86 +1,146 @@
 import os
 import sys
 import requests
-import logging
 import hashlib
 import base64
+import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Konfiguracja logowania
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger(__name__)
 
-# --- POBIERANIE DANYCH ---
-# Client ID wpisujemy NA SZTYWNO, żeby wykluczyć błąd w GitHub Secrets
-# To jest wartość skopiowana prosto z Twojego maila.
-HARDCODED_CLIENT_ID = "1303987-pwlimited"
-
+# --- POBIERANIE ZMIENNYCH ---
+CLIENT_ID = os.environ.get("IR_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.environ.get("IR_CLIENT_SECRET", "").strip()
 EMAIL = os.environ.get("IR_EMAIL", "").strip()
 PASSWORD = os.environ.get("IR_PASSWORD", "").strip()
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
+# Stałe
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/sessions"
 
-def encode_credential(secret, modifier):
-    """Standard Base64( SHA256( secret + modifier.lower() ) )"""
-    if not secret or not modifier: return ""
-    initial_text = secret + modifier.lower()
-    hash_digest = hashlib.sha256(initial_text.encode('utf-8')).digest()
-    return base64.b64encode(hash_digest).decode('utf-8')
-
-def main():
-    logger.info("🚀 Start skryptu 'BACK TO BASICS'...")
-    logger.info(f"👉 Używam sztywnego Client ID: '{HARDCODED_CLIENT_ID}'")
+def generate_hash(secret, salt):
+    """
+    Implementacja Twojego algorytmu JS w Pythonie:
+    SHA-256(secret + lower(salt)) -> Standard Base64
+    """
+    if not secret or not salt:
+        return ""
+        
+    # JS: const normalizedSalt = salt.trim().toLowerCase();
+    salt_normalized = salt.strip().lower()
     
-    # Weryfikacja długości sekretu (dla pewności)
-    if len(CLIENT_SECRET) != 42:
-        logger.warning(f"⚠️ UWAGA: Client Secret ma {len(CLIENT_SECRET)} znaków (oczekiwano 42).")
-    else:
-        logger.info("✅ Client Secret ma poprawną długość (42 znaki).")
-
-    # 1. Hasło solimy mailem
-    hashed_password = encode_credential(PASSWORD, EMAIL)
+    # JS: const data = encoder.encode(secret + normalizedSalt);
+    text_to_hash = secret + salt_normalized
     
-    # 2. Sekret solimy PEŁNYM Client ID (tak jak w dokumentacji)
-    # Wcześniej to nie działało przez spacje, teraz musi zadziałać.
-    hashed_secret = encode_credential(CLIENT_SECRET, HARDCODED_CLIENT_ID)
+    # JS: crypto.subtle.digest("SHA-256", data);
+    digest = hashlib.sha256(text_to_hash.encode('utf-8')).digest()
+    
+    # JS: btoa(binary) -> Standard Base64
+    return base64.b64encode(digest).decode('utf-8')
 
+def get_access_token():
+    logger.info("🔐 Generowanie skrótów (Hashing)...")
+    
+    # 1. Haszowanie hasła (Sól = Email)
+    hashed_password = generate_hash(PASSWORD, EMAIL)
+    
+    # 2. Haszowanie sekretu (Sól = Client ID)
+    hashed_client_secret = generate_hash(CLIENT_SECRET, CLIENT_ID)
+
+    # Parametry zgodne z Twoim Postmanem (image_b84177.png)
     payload = {
         "grant_type": "password_limited",
-        "client_id": HARDCODED_CLIENT_ID, # Wysyłamy pełne ID
-        "client_secret": hashed_secret,   # Solimy pełnym ID
         "username": EMAIL,
-        "password": hashed_password
+        "password": hashed_password,
+        "scope": "iracing.auth",         # <--- WAŻNE! To widać na screenie
+        "client_id": CLIENT_ID,
+        "client_secret": hashed_client_secret
     }
 
     try:
+        logger.info("🚀 Wysyłam żądanie logowania...")
+        # requests domyślnie używa 'application/x-www-form-urlencoded' dla parametru 'data'
         response = requests.post(TOKEN_URL, data=payload)
+        response.raise_for_status()
         
-        if response.status_code == 200:
-            token = response.json().get("access_token")
-            logger.info("✅✅✅ SUKCES! ZALOGOWANO!")
-            logger.info("🎉 Problem rozwiązany. To była kwestia spacji przy standardowym configu.")
-            
-            # Test pobrania danych
-            headers = {"Authorization": f"Bearer {token}"}
-            r = requests.get(SESSIONS_URL, headers=headers)
-            if r.status_code == 200:
-                count = len(r.json().get('sessions', []))
-                logger.info(f"📊 Widzę {count} sesji.")
-                if WEBHOOK_URL:
-                    requests.post(WEBHOOK_URL, json={"content": "✅ iRacing Bot: Zalogowano OSTATECZNIE!"})
-            
-        elif response.status_code == 401:
-            logger.error("❌ Błąd 401: invalid_client")
-            logger.error("💀 DIAGNOZA KOŃCOWA: Twój Client Secret jest BŁĘDNY lub WYGASŁ.")
-            logger.error("👉 Musisz napisać do supportu iRacing o wygenerowanie NOWEGO sekretu.")
-            logger.error("👉 Link do sekretu działa tylko 24h. Jeśli kliknąłeś go wcześniej, już nie zadziała.")
-            
+        token = response.json().get("access_token")
+        logger.info("✅ Zalogowano pomyślnie!")
+        return token
+        
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"❌ Błąd logowania: {e}")
+        logger.error(f"Odpowiedź serwera: {response.text}")
+        sys.exit(1)
+
+def send_to_discord(sessions):
+    if not WEBHOOK_URL:
+        logger.warning("⚠️ Brak Webhooka Discorda.")
+        return
+
+    logger.info(f"📨 Wysyłanie {len(sessions)} sesji na Discorda...")
+
+    embeds = []
+    for i, s in enumerate(sessions, 1):
+        # Wyciąganie danych (bezpieczne, z domyślnymi wartościami)
+        name = s.get('session_name', 'Bez nazwy')
+        track = s.get('track', {}).get('track_name', 'Nieznany tor')
+        host = s.get('host', {}).get('display_name', 'Anonim')
+        
+        # Obsługa aut (czasem car_types, czasem cars)
+        cars = s.get('car_types', []) or s.get('cars', [])
+        car_list = [str(c.get('car_name', 'Auto')) for c in cars]
+        cars_str = ", ".join(car_list)
+        
+        # Przycinanie tekstu aut jeśli za długi
+        if len(cars_str) > 100:
+            cars_str = cars_str[:97] + "..."
+
+        embed = {
+            "title": f"🏎️ Sesja #{i}: {name}",
+            "color": 3066993, # Zielony iRacing
+            "fields": [
+                {"name": "📍 Tor", "value": track, "inline": True},
+                {"name": "👤 Host", "value": host, "inline": True},
+                {"name": "🚗 Auta", "value": cars_str or "Brak danych", "inline": False}
+            ]
+        }
+        embeds.append(embed)
+
+    try:
+        # Discord API przyjmuje listę embedów
+        requests.post(WEBHOOK_URL, json={"embeds": embeds})
+        logger.info("✅ Powiadomienie wysłane!")
+    except Exception as e:
+        logger.error(f"❌ Błąd Discorda: {e}")
+
+def main():
+    # 1. Logowanie
+    token = get_access_token()
+    
+    # 2. Pobieranie sesji
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        logger.info("📥 Pobieranie listy sesji...")
+        resp = requests.get(SESSIONS_URL, headers=headers)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        sessions = data.get('sessions', [])
+        logger.info(f"📊 Znaleziono łącznie {len(sessions)} sesji.")
+        
+        # 3. Wybór pierwszych 5
+        top_5 = sessions[:5]
+        
+        if top_5:
+            send_to_discord(top_5)
         else:
-            logger.error(f"❌ Inny błąd: {response.status_code} - {response.text}")
+            logger.info("ℹ️ Brak aktywnych sesji do wysłania.")
 
     except Exception as e:
-        logger.error(f"❌ Błąd połączenia: {e}")
+        logger.error(f"❌ Błąd pobierania danych: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
