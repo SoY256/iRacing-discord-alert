@@ -1,7 +1,7 @@
 name: iRacing Bot 5min
 
 on:
-   schedule:
+  schedule:
     - cron: '*/5 * * * *' # Co 5 minut
   workflow_dispatch: # Przycisk do ręcznego uruchomienia
 
