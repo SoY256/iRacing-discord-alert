@@ -18,6 +18,15 @@ EMAIL = os.environ.get("IR_EMAIL", "").strip()
 PASSWORD = os.environ.get("IR_PASSWORD", "").strip()
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK", "").strip()
 
+# --- NOWE ZMIENNE FILTRUJĄCE ---
+# Pobieramy string i dzielimy go po przecinkach na listę, usuwając puste spacje
+FILTER_TRACKS_STR = os.environ.get("FILTER_TRACKS", "")
+FILTER_CARS_STR = os.environ.get("FILTER_CARS", "vee,porsche")
+
+# Tworzymy listy filtrów (tylko jeśli coś wpisano)
+FILTER_TRACKS = [x.strip().lower() for x in FILTER_TRACKS_STR.split(',') if x.strip()]
+FILTER_CARS = [x.strip().lower() for x in FILTER_CARS_STR.split(',') if x.strip()]
+
 # Stałe URL
 TOKEN_URL = "https://oauth.iracing.com/oauth2/token"
 SESSIONS_URL = "https://members-ng.iracing.com/data/hosted/combined_sessions"
@@ -70,7 +79,6 @@ def get_data_from_link(url, token, desc="dane"):
         return None
 
 def get_session_type_name(session):
-    # 1. Check Event Type (Priority)
     e_types = session.get('event_types', [])
     for e in e_types:
         et = e.get('event_type')
@@ -79,7 +87,6 @@ def get_session_type_name(session):
         if et == 3: return "Kwalifikacje"
         if et == 2: return "Trening"
 
-    # 2. Check Session Types
     s_types = session.get('session_types', [])
     for s in s_types:
         st = s.get('session_type')
@@ -93,77 +100,94 @@ def calculate_remaining_time(session):
     try:
         launch_str = session.get('launch_at')
         if not launch_str: return "Nieznany"
-        
         launch_dt = datetime.fromisoformat(launch_str.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
-        
         total_minutes = 0
         total_minutes += session.get('practice_length', 0)
         total_minutes += session.get('qualify_length', 0)
         total_minutes += session.get('race_length', 0) 
-        
         elapsed = (now - launch_dt).total_seconds() / 60
         remaining = total_minutes - elapsed
         
-        if remaining < 0:
-            return "W trakcie / Końcówka"
+        if remaining < 0: return "W trakcie / Końcówka"
         
         hours = int(remaining // 60)
         mins = int(remaining % 60)
-        
-        if hours > 0:
-            return f"{hours}h {mins}m"
-        else:
-            return f"{mins}m"
-        
+        if hours > 0: return f"{hours}h {mins}m"
+        else: return f"{mins}m"
     except Exception:
         return "N/A"
 
-def is_session_joinable(s):
+def check_filters(session):
     """
-    Filtr decydujący, czy sesja nadaje się do wysłania.
-    1. Musi być publiczna (bez hasła).
-    2. Musi mieć otwartą rejestrację (nie 'Closed').
+    Sprawdza, czy sesja pasuje do filtrów użytkownika (Tory i Auta).
+    Jeśli filtry są puste -> sesja przechodzi (zwraca True).
     """
-    # 1. Sprawdź hasło
-    if s.get('password_protected') is True:
-        return False
+    
+    # 1. FILTR TORÓW
+    if FILTER_TRACKS:
+        track_name = session.get('track', {}).get('track_name', '').lower()
+        # Sprawdzamy czy którakolwiek z fraz z filtra znajduje się w nazwie toru
+        # np. czy "spa" znajduje się w "circuit de spa-francorchamps"
+        match_track = any(f in track_name for f in FILTER_TRACKS)
+        if not match_track:
+            return False # Tor nie pasuje, odrzucamy
 
-    # 2. Sprawdź czy rejestracja wygasła ("Closed")
+    # 2. FILTR AUT
+    if FILTER_CARS:
+        session_cars = session.get('cars', [])
+        # Tworzymy listę nazw aut w tej sesji (lowercase)
+        session_car_names = [c.get('car_name', '').lower() for c in session_cars]
+        
+        # Sprawdzamy, czy w tej sesji jest PRZYNAJMNIEJ JEDNO auto, które nas interesuje
+        match_car = False
+        for s_car in session_car_names:
+            for f_car in FILTER_CARS:
+                if f_car in s_car:
+                    match_car = True
+                    break
+            if match_car: break
+        
+        if not match_car:
+            return False # Żadne auto nie pasuje, odrzucamy
+
+    return True
+
+def is_session_valid(s):
+    # 1. Hasło
+    if s.get('password_protected') is True: return False
+
+    # 2. Status rejestracji ("Closed")
     reg_expires_str = s.get('open_reg_expires')
     if reg_expires_str:
         try:
             reg_dt = datetime.fromisoformat(reg_expires_str.replace("Z", "+00:00"))
             now = datetime.now(timezone.utc)
-            
-            # Jeśli "teraz" jest później niż "koniec rejestracji" -> CLOSED
-            if now > reg_dt:
-                return False
-        except ValueError:
-            pass # Jeśli data jest błędna, puszczamy (bezpieczniej)
+            if now > reg_dt: return False
+        except ValueError: pass
+
+    # 3. FILTRY UŻYTKOWNIKA (Tory i Auta)
+    if not check_filters(s): return False
 
     return True
 
 def send_to_discord(sessions):
     if not WEBHOOK_URL: return
     
-    # --- FILTROWANIE ---
-    # Używamy naszej nowej funkcji 'is_session_joinable'
-    valid_sessions = [s for s in sessions if is_session_joinable(s)]
+    # Filtrowanie sesji
+    valid_sessions = [s for s in sessions if is_session_valid(s)]
     
-    logger.info(f"📨 Z {len(sessions)} pobranych sesji, {len(valid_sessions)} jest OTWARTYCH i PUBLICZNYCH.")
+    logger.info(f"🧐 Filtrowanie: Pobranno {len(sessions)}. Po filtrach (Hasło/Closed/UserPrefs) zostało: {len(valid_sessions)}.")
     
     if not valid_sessions:
-        logger.info("ℹ️ Brak sesji spełniających kryteria.")
+        logger.info("ℹ️ Brak sesji spełniających Twoje kryteria.")
         return
 
     embeds = []
-    # Bierzemy pierwsze 5 pasujących
     for i, s in enumerate(valid_sessions[:5], 1):
         name = s.get('session_name', 'Bez nazwy')
         track = s.get('track', {}).get('track_name', 'Nieznany tor')
         host = s.get('host', {}).get('display_name', 'Anonim')
-        
         session_type = get_session_type_name(s)
         time_left = calculate_remaining_time(s)
         
@@ -171,7 +195,6 @@ def send_to_discord(sessions):
         curr_d = s.get('num_drivers', 0)
         slots_info = f"{curr_d} / {max_d}"
 
-        # Auta z JSONa
         cars_list = s.get('cars', [])
         car_names = [c.get('car_name', 'Unknown Car') for c in cars_list]
         unique_cars = sorted(list(set(car_names)))
@@ -204,12 +227,17 @@ def send_to_discord(sessions):
 def main():
     token = get_access_token()
     
+    # Wyświetlamy aktywne filtry w logach
+    if FILTER_TRACKS: logger.info(f"🔍 Filtr Torów AKTYWNY: {FILTER_TRACKS}")
+    else: logger.info("🔍 Filtr Torów: WYŁĄCZONY (Wszystkie tory)")
+    
+    if FILTER_CARS: logger.info(f"🔍 Filtr Aut AKTYWNY: {FILTER_CARS}")
+    else: logger.info("🔍 Filtr Aut: WYŁĄCZONY (Wszystkie auta)")
+
     data = get_data_from_link(SESSIONS_URL, token, "Lista Sesji")
     if not data: sys.exit(1)
 
     sessions = data.get('sessions', [])
-    logger.info(f"📊 Pobrano łącznie {len(sessions)} sesji.")
-    
     if sessions:
         send_to_discord(sessions)
     else:
