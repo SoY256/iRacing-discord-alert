@@ -1,15 +1,18 @@
 name: iRacing Bot 5 min
 
 on:
+  # To musi być WCIĘTE (pod 'on:')
+  repository_dispatch:
+    types: [trigger-bot]
+  
   schedule:
     - cron: "*/5 * * * *"
+  
   workflow_dispatch:
-
- repository_dispatch:
-    types: [trigger-bot]
 
 permissions:
   contents: write
+
 
 jobs:
   run-bot:
