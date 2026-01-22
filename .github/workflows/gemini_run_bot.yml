@@ -5,7 +5,7 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
-repository_dispatch:
+ repository_dispatch:
     types: [trigger-bot]
 
 permissions:
