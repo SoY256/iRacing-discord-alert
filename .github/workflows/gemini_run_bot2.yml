@@ -17,7 +17,8 @@ permissions:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 4
+    
     steps:
       - name: Pobranie kodu (Full History)
         uses: actions/checkout@v4
