@@ -27,7 +27,7 @@ env_cars = os.environ.get("FILTER_CARS", "").strip()
 # 2. Jeśli env jest pusty, używamy Twoich domyślnych wartości HARDCODED
 # WPISZ SWOJE DOMYŚLNE WARTOŚCI TUTAJ, JEŚLI CHCESZ:
 DEFAULT_TRACKS = "Spa,Monza,Charlotte,Navarra,Barcelona,Daytona,Oran,oulton,Miami International,Tsukuba,Winton,WeatherTech,Virginia International"
-DEFAULT_CARS = "W12,W13,SF23,DW12,MP4,iR-01,IL-15,F3,F4,Super Formula Lights"  #Porsche 911 GT3 R (992)
+DEFAULT_CARS = "W12,W13,SF23,DW12,MP4-30,iR-01,IL-15,F3,F4,Super Formula Lights"  #Porsche 911 GT3 R (992)
 
 # Logika: Użyj Env, a jak pusty to Default
 final_tracks_str = env_tracks if env_tracks else DEFAULT_TRACKS
